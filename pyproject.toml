@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flexModel"
+version = "0.1.0"
+description = "Metabolic flux prediction from gene expression using graph neural networks"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = ["metabolic flux", "graph neural networks", "systems biology", "gene expression"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+]
+
+# IMPORTANT: This package requires PyTorch and PyTorch Geometric with CUDA support.
+# Due to different pip index URLs required, installation MUST follow this procedure:
+#   1. mamba env create -f environment.yml
+#   2. mamba activate flex_model_env
+#   3. bash install_pips.sh
+# 
+# Direct pip install will NOT work correctly due to:
+# - PyTorch needing CUDA-specific wheels from pytorch.org index
+# - PyG extensions needing compilation against installed PyTorch version
+# - torchsort requiring --no-build-isolation to avoid ABI mismatch
+dependencies = [
+    "torch>=2.8.0",
+    "torch-geometric>=2.6.0",
+    "lightning>=2.0.0",
+    "torchsort>=0.1.9",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+viz = [
+    "matplotlib>=3.7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/flex_model"
+Repository = "https://github.com/yourusername/flex_model"
+Issues = "https://github.com/yourusername/flex_model/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["flexModel*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = ["E501"]  # Line too long (handled by black)
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

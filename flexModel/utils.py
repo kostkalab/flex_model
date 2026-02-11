@@ -13,7 +13,6 @@ Key components:
 import torch
 from typing import Optional
 import torchsort
-from matplotlib import cm, colors
 
 
 def diff_spearman(pred, target, wts=None, regularization_strength=1e-2):

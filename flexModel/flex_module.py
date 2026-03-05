@@ -71,10 +71,11 @@ class FlexModule(L.LightningModule):
         self.gnn = gnn
         self.flx_project = flx_project
         self.save_hyperparameters(ignore=["gnn", "Mcr", "Mmg", "Mmr", "cor_wts"])
-        self.loss_lms = torch.nn.Parameter(
-            torch.Tensor([l_fb, l_pos, l_cor, l_sco, l_ent]), requires_grad=False
+        
+        self.register_buffer(
+            "loss_lms", torch.tensor([l_fb, l_pos, l_cor, l_sco, l_ent], dtype=torch.float32)
         )
-
+        
         self.register_buffer("cor_wts", cor_wts)
 
         # - make eids parameters of the model

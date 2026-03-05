@@ -229,12 +229,15 @@ class MeanBatchNorm1d(torch.nn.Module):
             else:  # use exponential moving average
                 exponential_average_factor = self.momentum
             mean = input.mean(dim=0)
-            if self.num_batches_tracked == 1:
-                self.running_mean.copy_(mean)
-            else:
-                with torch.no_grad():
+            # Keep running statistics outside autograd to avoid carrying graph
+            # references between batches.
+            with torch.no_grad():
+                if self.num_batches_tracked == 1:
+                    self.running_mean.copy_(mean.detach())
+                else:
                     self.running_mean.mul_(1 - exponential_average_factor)
-                    self.running_mean.add_(exponential_average_factor * mean)
+                    self.running_mean.add_(exponential_average_factor * mean.detach())
+            if self.num_batches_tracked != 1:
                 mean = self.running_mean
         else:
             mean = self.running_mean

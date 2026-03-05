@@ -312,12 +312,13 @@ class FlexModule(L.LightningModule):
         lses = lses.mean(dim=0)  # Average over batch, shape: (5,)
         loss = lses @ self.loss_lms  # Weighted sum with loss weights, shape: ()
 
-        self.log("trn_loss-fb", lses[0] * self.loss_lms[0], prog_bar=True)
-        self.log("trn_loss-pos", lses[1] * self.loss_lms[1], prog_bar=True)
-        self.log("trn_loss-cor", lses[2] * self.loss_lms[2], prog_bar=True)
-        self.log("trn_loss-sco", lses[3] * self.loss_lms[3], prog_bar=True)
-        self.log("trn_loss-ent", lses[4] * self.loss_lms[4], prog_bar=True)
-        self.log("trn_loss-all", loss, prog_bar=True)
+        # Explicitly detach logging values so metric aggregation never retains graphs.
+        self.log("trn_loss-fb", (lses[0] * self.loss_lms[0]).detach(), prog_bar=True)
+        self.log("trn_loss-pos", (lses[1] * self.loss_lms[1]).detach(), prog_bar=True)
+        self.log("trn_loss-cor", (lses[2] * self.loss_lms[2]).detach(), prog_bar=True)
+        self.log("trn_loss-sco", (lses[3] * self.loss_lms[3]).detach(), prog_bar=True)
+        self.log("trn_loss-ent", (lses[4] * self.loss_lms[4]).detach(), prog_bar=True)
+        self.log("trn_loss-all", loss.detach(), prog_bar=True)
 
         return loss
 
@@ -336,12 +337,12 @@ class FlexModule(L.LightningModule):
         lses = self.losses(x, flxs, flxs_p)  # shape: (batch_size, 5)
         lses = lses.mean(dim=0)  # Average over batch, shape: (5,)
         loss = lses @ self.loss_lms  # Weighted sum with loss weights, shape: ()
-        self.log("val_loss-fb", lses[0] * self.loss_lms[0], prog_bar=True)
-        self.log("val_loss-pos", lses[1] * self.loss_lms[1], prog_bar=True)
-        self.log("val_loss-cor", lses[2] * self.loss_lms[2], prog_bar=True)
-        self.log("val_loss-sco", lses[3] * self.loss_lms[3], prog_bar=True)
-        self.log("val_loss-ent", lses[4] * self.loss_lms[4], prog_bar=True)
-        self.log("val_loss-all", loss, prog_bar=True)
+        self.log("val_loss-fb", (lses[0] * self.loss_lms[0]).detach(), prog_bar=True)
+        self.log("val_loss-pos", (lses[1] * self.loss_lms[1]).detach(), prog_bar=True)
+        self.log("val_loss-cor", (lses[2] * self.loss_lms[2]).detach(), prog_bar=True)
+        self.log("val_loss-sco", (lses[3] * self.loss_lms[3]).detach(), prog_bar=True)
+        self.log("val_loss-ent", (lses[4] * self.loss_lms[4]).detach(), prog_bar=True)
+        self.log("val_loss-all", loss.detach(), prog_bar=True)
 
         return loss
 

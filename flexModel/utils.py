@@ -35,6 +35,7 @@ def diff_spearman(pred, target, wts=None, regularization_strength=1e-2):
         AssertionError: If pred/target shapes don't match or dimensions > 2
     """
     assert pred.shape == target.shape, "pred and target must have the same shape"
+    out_dtype = pred.dtype
     
     if pred.dim() == 1:
         pred = pred.unsqueeze(0)
@@ -48,12 +49,26 @@ def diff_spearman(pred, target, wts=None, regularization_strength=1e-2):
         assert wts.shape[0] == pred.shape[1], "wts must have the same length as the number of columns in pred and target"
     else:
         wts = torch.ones(pred.shape[1], dtype=pred.dtype).to(pred.device)
-        
+
+    # torchsort kernels are most stable in FP32 under AMP/bfloat16 training.
+    # Only upcast when running in mixed precision or low-precision input dtypes.
+    use_fp32_torchsort = (
+        torch.is_autocast_enabled()
+        or pred.dtype in (torch.float16, torch.bfloat16)
+        or target.dtype in (torch.float16, torch.bfloat16)
+    )
+    if use_fp32_torchsort:
+        pred = pred.float()
+        target = target.float()
+        wts = wts.float().to(pred.device)
+    else:
+        wts = wts.to(pred.device, dtype=pred.dtype)
+
     pred_rank = torchsort.soft_rank(pred, regularization_strength=regularization_strength)
     target_rank = torchsort.soft_rank(target, regularization_strength=regularization_strength)
 
     correlation = wcor(pred_rank, target_rank, wts)
-    return correlation
+    return correlation.to(out_dtype)
 
 def wcor(x: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     """Weighted Pearson correlation coefficient between rows of x and y.

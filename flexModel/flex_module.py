@@ -83,7 +83,6 @@ class FlexModule(L.LightningModule):
         #   parameters apparently need to be *direct* attributes of the module
         self.register_buffer("eid_g2r", eid_g2r)
         self.register_buffer("eid_r2r", eid_r2r)
-        self.eid = {("G", "to", "R"): self.eid_g2r, ("R", "to", "R"): self.eid_r2r}
 
         # - matrix connecting genes to modules (for loss)
         self.register_buffer("Mmg", Mmg)
@@ -135,6 +134,10 @@ class FlexModule(L.LightningModule):
         # - batch normalization for similarity correlation
         self.fl_bn = MeanBatchNorm1d(self.gnn.nr)
         self.ge_bn = MeanBatchNorm1d(self.Mmg.shape[1])
+
+    @property
+    def eid(self):
+        return {("G", "to", "R"): self.eid_g2r, ("R", "to", "R"): self.eid_r2r}
 
     def forward(self, ge: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Predict metabolic fluxes from gene expression.

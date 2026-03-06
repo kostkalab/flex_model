@@ -3,7 +3,7 @@ import torch
 import lightning as L
 from torch_geometric.data import HeteroData
 
-from .utils import sim_cor, diff_spearman, MeanBatchNorm1d
+from .utils import sim_cor, diff_spearman
 
 class FlexModule(L.LightningModule):
     """Lightning module for metabolic flux prediction from gene expression.
@@ -44,7 +44,7 @@ class FlexModule(L.LightningModule):
         Pi: Nullspace projector matrix (if flx_project=True)
         g_embed: Learnable gene embeddings (if gen_emb not provided)
         r_embed: Learnable reaction embeddings (if rea_emb not provided)
-        fl_bn, ge_bn: Batch normalization layers for similarity correlation
+        Similarity centering is done inline in the loss with tensor ops.
     """
 
     def __init__(
@@ -131,10 +131,6 @@ class FlexModule(L.LightningModule):
             self.register_buffer("rea_emb_tt", None)
             # - all reactions get the same embedding
             self.r_embed = torch.nn.Embedding(1, self.gnn.re_edim)
-
-        # - batch normalization for similarity correlation
-        self.fl_bn = MeanBatchNorm1d(self.gnn.nr)
-        self.ge_bn = MeanBatchNorm1d(self.Mmg.shape[1])
 
     @property
     def eid(self):
@@ -223,9 +219,9 @@ class FlexModule(L.LightningModule):
         )
         
         # L_sco: Similarity Correlation Loss (batch-level consistency)
-        # Mean-center features before computing pairwise similarities
-        flxs_n = self.fl_bn(flxs)
-        ge_n = self.ge_bn(ge)
+        # Mean-center over the batch with simple tensor ops.
+        flxs_n = flxs - flxs.mean(dim=0, keepdim=True)
+        ge_n = ge - ge.mean(dim=0, keepdim=True)
         lsco = sim_cor(flxs_n, ge_n)
         losses[:, 3] = torch.ones(nsam, device=ge.device) - lsco
 

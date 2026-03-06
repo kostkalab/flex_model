@@ -28,7 +28,7 @@ class BiLinAntisymmetricFunc(torch.nn.Module):
             - torch.matmul(self.V, self.U.transpose(-1, -2))  # K×d×d
         g_out1 = self.g(x1).squeeze(-1)  # B x nR
         g_out2 = self.g(x2).squeeze(-1)  # B x nR
-        bili = torch.zeros_like(g_out1) 
-        for Mk, ak in zip(M, self.alpha):
-            bili += ak * (x1 @ Mk * x2).sum(dim=-1)
+        # Vectorised bilinear: einsum replaces Python loop over K matrices
+        # x1 @ M -> B×nR×K×d, element-wise * x2 -> sum over d -> B×nR×K
+        bili = torch.einsum('bnd,kdf,bnf,k->bn', x1, M, x2, self.alpha)
         return g_out1 - g_out2 + bili  # B x nR

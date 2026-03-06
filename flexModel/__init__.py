@@ -13,7 +13,7 @@ Main components:
 __version__ = "0.1.0"
 
 from .flex_module import FlexModule
-from .flex_gnn import FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv_GGConv_LW
+from .flex_gnn import FlexGNN, FluxHead, FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv_GGConv_LW
 from .conv_gatedGraphConv import ResGatedConv
 from .conv_gadconv import GADConv
 from .utils import (
@@ -26,6 +26,8 @@ from .utils import (
 
 __all__ = [
     "FlexModule",
+    "FlexGNN",
+    "FluxHead",
     "FlexGNN_GCNConv_GGConv",
     "FlexGNN_GCNConv_GGConv_LW",
     "ResGatedConv",

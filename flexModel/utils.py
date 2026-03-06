@@ -109,9 +109,12 @@ def wcor(x: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     mx = (x * wn).sum(dim=1)
     my = (y * wn).sum(dim=1)
 
-    cxy = ((x.t() - mx).t() * (y.t() - my).t() * wn).sum(dim=1)
-    cxx = ((x.t() - mx).t().square() * wn).sum(dim=1)
-    cyy = ((y.t() - my).t().square() * wn).sum(dim=1)
+    # Centre once, then broadcast-multiply (avoids repeated transposes)
+    xc = x - mx.unsqueeze(1)
+    yc = y - my.unsqueeze(1)
+    cxy = (xc * yc * wn).sum(dim=1)
+    cxx = (xc.square() * wn).sum(dim=1)
+    cyy = (yc.square() * wn).sum(dim=1)
 
     return cxy / (cxx * cyy).sqrt()
 
@@ -167,15 +170,17 @@ def sim_cor(
         flx_s = flx
         ge_s = ge
 
-    # - nomralize to unit circle and calculate dot product
-    flx_n = (flx_s.t() / flx_s.norm(dim=1)).t()
+    # Normalize to unit vectors and compute cosine similarity matrices
+    flx_n = flx_s / flx_s.norm(dim=1, keepdim=True)
     sim_f = flx_n @ flx_n.t()
-    ge_n = (ge_s.t() / ge_s.norm(dim=1)).t()
+    ge_n = ge_s / ge_s.norm(dim=1, keepdim=True)
     sim_g = ge_n @ ge_n.t()
 
-    # - vectorize upper triangle of the matrices
-    sim_fv = sim_f[torch.triu(torch.ones(sim_f.shape, device=sim_f.device), diagonal=1) == 1]
-    sim_gv = sim_g[torch.triu(torch.ones(sim_g.shape, device=sim_g.device), diagonal=1) == 1]
+    # Extract upper triangle without allocating a full ones+triu mask
+    n = sim_f.shape[0]
+    idx = torch.triu_indices(n, n, offset=1, device=sim_f.device)
+    sim_fv = sim_f[idx[0], idx[1]]
+    sim_gv = sim_g[idx[0], idx[1]]
 
     # - calculate correlation between the two vectors
     sim_cor = diff_spearman(sim_fv, sim_gv)
@@ -219,7 +224,7 @@ class MeanBatchNorm1d(torch.nn.Module):
         self.num_features = num_features
         self.momentum = momentum
         self.running_mean = torch.nn.parameter.Buffer(torch.zeros(num_features))
-        self.num_batches_tracked = torch.nn.parameter.Buffer(torch.tensor(0, dtype=torch.float32))
+        self.num_batches_tracked = torch.nn.parameter.Buffer(torch.tensor(0, dtype=torch.int64))
 
     def forward(self, input):
         """Apply mean centering to input.
@@ -244,16 +249,15 @@ class MeanBatchNorm1d(torch.nn.Module):
             else:  # use exponential moving average
                 exponential_average_factor = self.momentum
             mean = input.mean(dim=0)
-            # Keep running statistics outside autograd to avoid carrying graph
-            # references between batches.
+            # Update running statistics for eval mode, outside autograd to avoid
+            # carrying graph references between batches.
             with torch.no_grad():
                 if self.num_batches_tracked == 1:
                     self.running_mean.copy_(mean.detach())
                 else:
                     self.running_mean.mul_(1 - exponential_average_factor)
                     self.running_mean.add_(exponential_average_factor * mean.detach())
-            if self.num_batches_tracked != 1:
-                mean = self.running_mean
+            # Always use current batch mean during training so gradients flow.
         else:
             mean = self.running_mean
 

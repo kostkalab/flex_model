@@ -168,73 +168,62 @@ class FlexModule(L.LightningModule):
             flxs_p = None
         return flxs, flxs_p
 
+    def loss_fb(
+        self, flxs: torch.Tensor, flxs_p: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Flux balance loss: ||S·v||² or ||v - v_proj||² (shape: batch_size)."""
+        if flxs_p is None:
+            return (self.Mcr @ flxs.t()).square().sum(dim=0)
+        else:
+            return (flxs - flxs_p).square().sum(dim=1)
+
+    def loss_pos(self, flxs: torch.Tensor) -> torch.Tensor:
+        """Positivity loss: Σ relu(-v)² (shape: batch_size)."""
+        return torch.nn.functional.relu(-flxs).square().sum(dim=1)
+
+    def loss_cor(self, ge: torch.Tensor, flxs: torch.Tensor) -> torch.Tensor:
+        """Module-level Spearman correlation loss: 1 - ρ(M_g·g_std, M_r·|v|_std) (shape: batch_size)."""
+        ge_sdt = ge - ge.mean(dim=1, keepdim=True)
+        ge_sdt = ge_sdt / (ge_sdt.std(dim=1, keepdim=True) + 1e-7)
+        flxs_sdt = flxs.abs() - flxs.abs().mean(dim=1, keepdim=True)
+        flxs_sdt = flxs_sdt / (flxs_sdt.std(dim=1, keepdim=True) + 1e-7)
+        return torch.ones(ge.shape[0], device=ge.device) - diff_spearman(
+            (self.Mmg @ ge_sdt.t()).t(),
+            (self.Mmr @ flxs_sdt.t()).t(),
+            wts=self.cor_wts,
+        )
+
+    def loss_sco(self, ge: torch.Tensor, flxs: torch.Tensor) -> torch.Tensor:
+        """Sample similarity correlation loss: 1 - sim_cor(v, g) (shape: batch_size)."""
+        flxs_n = flxs - flxs.mean(dim=0, keepdim=True)
+        ge_n = ge - ge.mean(dim=0, keepdim=True)
+        return torch.ones(ge.shape[0], device=ge.device) - sim_cor(flxs_n, ge_n)
+
+    def loss_ent(self, flxs: torch.Tensor) -> torch.Tensor:
+        """Entropy loss: Σ p log(p) where p = |v|/Σ|v| (shape: batch_size).
+        Negative entropy — minimizing with l_ent > 0 encourages uniformity; l_ent < 0 encourages sparsity."""
+        flux_prob = flxs.abs()
+        flux_prob = flux_prob / (flux_prob.sum(dim=1, keepdim=True) + 1e-7)
+        return (flux_prob * torch.log(flux_prob + 1e-7)).sum(dim=1)
+
     def losses(
         self, ge: torch.Tensor, flxs: torch.Tensor, flxs_p: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """Compute all loss components for metabolic flux prediction.
-        
-        Loss Formulas:
-            L_fb = ||S·v||² (flux balance) or ||v - v_proj||² (projection consistency)
-            L_pos = Σ max(0, -v)² (penalty for negative fluxes)
-            L_cor = 1 - ρ_spearman(M_g·g_std, M_r·|v|_std) (module correlation)
-            L_sco = 1 - sim_cor(v, g) (sample similarity preservation)
-            L_ent = Σ p log(p) where p = |v|/Σ|v| (negative entropy; l_ent > 0 → uniformity, l_ent < 0 → sparsity)
-        
-        Args:
-            ge: Gene expression, shape (batch_size, n_genes)
-            flxs: Predicted fluxes, shape (batch_size, n_reactions)
-            flxs_p: Projected fluxes (optional), shape (batch_size, n_reactions)
-        
-        Returns:
-            Loss components tensor, shape (batch_size, 5) where columns are [L_fb, L_pos, L_cor, L_sco, L_ent]
+        """Assemble all loss components into a (batch_size, 5) tensor: [L_fb, L_pos, L_cor, L_sco, L_ent].
+
+        Resolves flux projection once here so individual loss methods receive the
+        effective fluxes (flxs_p when available, otherwise flxs).
+        Override individual loss_* methods to customise specific components.
         """
         nsam = ge.shape[0]
-        losses = torch.empty((nsam, 5)).to(self.device)
-
-        # L_fb: Flux Balance Loss
-        if flxs_p is None:
-            losses[:, 0] = (self.Mcr @ flxs.t()).square().sum(dim=0)
-        else:
-            losses[:, 0] = (flxs - flxs_p).square().sum(dim=1)
-            flxs = flxs_p
-
-        # L_pos: Positivity Loss (penalize negative fluxes)
-        # Formula: Σ (max(0, -v))² = Σ (relu(-v))²
-        losses[:, 1] = (
-            torch.nn.functional.relu(-flxs).square()
-        ).sum(dim=1)
-        
-        # L_cor: Module-level Correlation Loss
-        # Standardize gene expression and flux magnitudes per sample (z-score)
-        ge_sdt = ge - ge.mean(dim=1, keepdim=True)
-        ge_sdt = ge_sdt / (ge_sdt.std(dim=1, keepdim=True) + 1e-7)  # epsilon for numerical stability
-        flxs_sdt = flxs.abs() - flxs.abs().mean(dim=1, keepdim=True)
-        flxs_sdt = flxs_sdt / (flxs_sdt.std(dim=1, keepdim=True) + 1e-7)
-        
-        # Aggregate to module level and compute weighted Spearman correlation
-        losses[:, 2] = torch.ones(nsam, device=ge.device) - diff_spearman(
-            (self.Mmg @ ge_sdt.t()).t(),  # Module-level expression
-            (self.Mmr @ flxs_sdt.t()).t(),  # Module-level flux magnitude
-            wts=self.cor_wts,  # Module importance weights
-        )
-        
-        # L_sco: Similarity Correlation Loss (batch-level consistency)
-        # Mean-center over the batch with simple tensor ops.
-        flxs_n = flxs - flxs.mean(dim=0, keepdim=True)
-        ge_n = ge - ge.mean(dim=0, keepdim=True)
-        lsco = sim_cor(flxs_n, ge_n)
-        losses[:, 3] = torch.ones(nsam, device=ge.device) - lsco
-
-        # L_ent: Entropy Loss (with positive l_ent: encourages uniform distributions)
-        # Computes negative entropy: Σ p log(p) where p = |v|/Σ|v|
-        # Note: This is -H (negative of traditional entropy H = -Σ p log(p))
-        # Minimizing with l_ent > 0 → maximizes H → encourages uniformity (NOT sparsity)
-        # For sparsity, use l_ent < 0 or flip sign below
-        flux_prob = flxs.abs()
-        flux_prob = flux_prob / (flux_prob.sum(dim=1, keepdim=True) + 1e-7)  # epsilon for numerical stability, normalizeflux_prob.sum(dim=1, keepdim=True)
-        losses[:, 4] = (flux_prob * torch.log(flux_prob + 1e-7)).sum(dim=1)  # epsilon prevents log(0)
-
-        return losses
+        lses = torch.empty((nsam, 5), device=self.device)
+        lses[:, 0] = self.loss_fb(flxs, flxs_p)
+        flxs = flxs_p if flxs_p is not None else flxs
+        lses[:, 1] = self.loss_pos(flxs)
+        lses[:, 2] = self.loss_cor(ge, flxs)
+        lses[:, 3] = self.loss_sco(ge, flxs)
+        lses[:, 4] = self.loss_ent(flxs)
+        return lses
 
     def get_gen_rea_emb(self, ge) -> dict[str, torch.Tensor]:
         """Prepare gene and reaction embeddings for GNN input.

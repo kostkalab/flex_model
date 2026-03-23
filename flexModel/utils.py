@@ -492,3 +492,4 @@ def monotone_invariant_spearman(
     corr = num / denom
 
     return corr.squeeze(0) if corr.shape[0] == 1 else corr
+

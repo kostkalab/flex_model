@@ -11,7 +11,7 @@ from torch_geometric.nn import HeteroConv, GCNConv
 from torch.utils.checkpoint import checkpoint
 
 from .conv_gatedGraphConv import ResGatedConv
-from .halfSpaceAntiSymmetric import BiLinAntisymmetricFunc
+from .halfSpaceAntiSymmetric import AntisymmetricFunc
 
 
 EdgeType = tuple[str, str, str]
@@ -24,7 +24,8 @@ class FluxHead(torch.nn.Module):
     def __init__(self, re_edim: int):
         super().__init__()
         self.re_edim = re_edim
-        self.las = BiLinAntisymmetricFunc(re_edim // 2)
+        #self.las = BiLinAntisymmetricFunc(re_edim // 2)
+        self.las = AntisymmetricFunc(d = re_edim // 2)
 
     def forward(self, reaction_reprs: torch.Tensor) -> torch.Tensor:
         tmp1 = reaction_reprs[:, :, : self.re_edim // 2]

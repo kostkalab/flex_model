@@ -1,12 +1,14 @@
 """Basic test for FlexModule with random data to verify mechanics work."""
 
+import pytest
 import torch
 import torch_geometric
-from flexModel.flex_gnn import FlexGNN_GCNConv_GGConv
+from flexModel.flex_gnn_v2 import FlexGNN_GCNConv_GGConv, FlexGNN_Disc_GGConv
 from flexModel.flex_module import FlexModule
 
 
-def test_flex_module_forward_pass():
+@pytest.mark.parametrize("use_disc", [False, True])
+def test_flex_module_forward_pass(use_disc):
     """Test FlexModule forward pass with random graph structure and embeddings."""
     
     # Set random seed for reproducibility
@@ -71,12 +73,22 @@ def test_flex_module_forward_pass():
     rea_emb = torch.randn(n_reactions, reaction_edim)
     
     # Initialize GNN model
-    gnn = FlexGNN_GCNConv_GGConv(
-        nr=n_reactions,
-        re_edim=reaction_edim,
-        ge_edim=gene_edim,
-        nlayers=2
-    )
+    if use_disc:
+        f_disc_orig = torch.rand(eid_r2r.shape[1])
+        gnn = FlexGNN_Disc_GGConv(
+            nr=n_reactions,
+            f_disc_orig=f_disc_orig,
+            re_edim=reaction_edim,
+            ge_edim=gene_edim,
+            nlayers=2
+        )
+    else:
+        gnn = FlexGNN_GCNConv_GGConv(
+            nr=n_reactions,
+            re_edim=reaction_edim,
+            ge_edim=gene_edim,
+            nlayers=2
+        )
     
     # Initialize FlexModule
     model = FlexModule(
@@ -187,4 +199,5 @@ def test_flex_module_forward_pass():
 
 
 if __name__ == "__main__":
-    test_flex_module_forward_pass()
+    test_flex_module_forward_pass(False)
+    test_flex_module_forward_pass(True)

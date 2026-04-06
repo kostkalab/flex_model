@@ -1,12 +1,13 @@
 """Test that the model can train and fit random data."""
 
+import pytest
 import torch
 import torch.nn.functional as F
 from flexModel import FlexModule
-from flexModel.flex_gnn import FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv_GGConv_LW
+from flexModel.flex_gnn_v2 import FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv_GGConv_LW, FlexGNN_Disc_GGConv, FlexGNN_Disc_GGConv_LW
 
 
-def create_flex_module(n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=32, use_layer_weights=False):
+def create_flex_module(n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=32, use_layer_weights=False, use_disc=False):
     """Create a FlexModule with random graph structure and embeddings."""
     n_compounds = n_reactions // 2
     n_modules = max(5, n_genes // 10)
@@ -53,20 +54,25 @@ def create_flex_module(n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=3
     rea_emb = torch.randn(n_reactions, reaction_edim)
     
     # Initialize GNN (with or without layer weights)
-    if use_layer_weights:
-        gnn = FlexGNN_GCNConv_GGConv_LW(
-            nr=n_reactions,
-            re_edim=reaction_edim,
-            ge_edim=gene_edim,
-            nlayers=2
-        )
+    if use_disc:
+        f_disc = torch.rand(eid_r2r.shape[1])
+        if use_layer_weights:
+            gnn = FlexGNN_Disc_GGConv_LW(
+                nr=n_reactions, f_disc_orig=f_disc, re_edim=reaction_edim, ge_edim=gene_edim, nlayers=2
+            )
+        else:
+            gnn = FlexGNN_Disc_GGConv(
+                nr=n_reactions, f_disc_orig=f_disc, re_edim=reaction_edim, ge_edim=gene_edim, nlayers=2
+            )
     else:
-        gnn = FlexGNN_GCNConv_GGConv(
-            nr=n_reactions,
-            re_edim=reaction_edim,
-            ge_edim=gene_edim,
-            nlayers=2
-        )
+        if use_layer_weights:
+            gnn = FlexGNN_GCNConv_GGConv_LW(
+                nr=n_reactions, re_edim=reaction_edim, ge_edim=gene_edim, nlayers=2
+            )
+        else:
+            gnn = FlexGNN_GCNConv_GGConv(
+                nr=n_reactions, re_edim=reaction_edim, ge_edim=gene_edim, nlayers=2
+            )
     
     model = FlexModule(
         gnn=gnn,
@@ -90,7 +96,8 @@ def create_flex_module(n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=3
     return model, n_genes, n_reactions
 
 
-def test_model_overfits_random_data():
+@pytest.mark.parametrize('use_disc', [False, True])
+def test_model_overfits_random_data(use_disc):
     """Test that model can overfit a small random training set (standard FlexGNN).
     
     If the model cannot reduce loss on random data, there's likely
@@ -100,7 +107,7 @@ def test_model_overfits_random_data():
     
     # Create model with realistic dimensions
     torch.manual_seed(42)
-    model, n_genes, n_reactions = create_flex_module(n_genes=500, n_reactions=1000, use_layer_weights=False)
+    model, n_genes, n_reactions = create_flex_module(n_genes=64, n_reactions=128, use_layer_weights=False, use_disc=use_disc)
     
     # Create fixed random gene expression data
     n_samples = 16
@@ -151,7 +158,8 @@ def test_model_overfits_random_data():
     print("✅ Model successfully overfits random data - training mechanics work!")
 
 
-def test_model_with_layer_weights_overfits():
+@pytest.mark.parametrize('use_disc', [False, True])
+def test_model_with_layer_weights_overfits(use_disc):
     """Test that model with layer weights can overfit random data (FlexGNN_LW).
     
     Verifies that the layer-weighted variant also trains correctly.
@@ -160,7 +168,7 @@ def test_model_with_layer_weights_overfits():
     
     # Create model with layer weights and realistic dimensions
     torch.manual_seed(42)
-    model, n_genes, n_reactions = create_flex_module(n_genes=500, n_reactions=1000, use_layer_weights=True)
+    model, n_genes, n_reactions = create_flex_module(n_genes=64, n_reactions=128, use_layer_weights=True, use_disc=use_disc)
     
     # Create fixed random gene expression data
     n_samples = 16

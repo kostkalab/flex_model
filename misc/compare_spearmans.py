@@ -22,9 +22,14 @@ Metrics collected per scenario:
 """
 
 import math
+import sys
+import os
 import torch
 import numpy as np
 from scipy.stats import spearmanr as scipy_spearman
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from flexModel.pairwise_concordance import pairwise_concordance
 
 from flexModel.utils import diff_spearman, diff_spearman_ai, diff_spearman_ai_st, monotone_invariant_spearman
 
@@ -60,6 +65,18 @@ def grad_norm(fn, pred, target) -> float:
         return p.grad.norm().item()
     except Exception as e:
         print(f"    [grad error] {e}")
+        return float("nan")
+
+
+def mean_abs_offdiag_hessian(loss_fn, p_val: torch.Tensor) -> float:
+    """Mean absolute value of Hessian off-diagonal elements of loss_fn w.r.t. p."""
+    try:
+        x = p_val.detach().clone().requires_grad_(True)
+        H = torch.autograd.functional.hessian(loss_fn, x)
+        n = H.shape[0]
+        mask = ~torch.eye(n, dtype=torch.bool, device=H.device)
+        return H[mask].abs().mean().item()
+    except Exception:
         return float("nan")
 
 
@@ -239,17 +256,50 @@ for mname, mfn in methods.items():
     p = pred_A.clone().detach().requires_grad_(True)
     opt = torch.optim.Adam([p], lr=1e-2)
     print(f"  {mname}")
-    print(f"  {'Step':>5}  {'Corr':>8}  {'Loss':>8}  {'|∇|':>10}")
+    print(f"  {'Step':>5}  {'Corr':>8}  {'Loss':>8}  {'|∇|':>10}  {'H_od':>10}")
+    _t = target_A.detach()
     for step in range(NSTEPS):
         opt.zero_grad()
-        corr = mfn(p, target_A.detach())
+        corr = mfn(p, _t)
         if corr.dim() > 0:
             corr = corr.mean()
         loss = 1 - corr          # maximise correlation
         loss.backward()
         gn_s = p.grad.norm().item() if p.grad is not None else float("nan")
         if step % PRINT_EVERY == 0 or step == NSTEPS - 1:
-            print(f"  {step:>5}  {corr.item():>8.4f}  {loss.item():>8.4f}  {gn_s:>10.5f}")
+            hod = mean_abs_offdiag_hessian(lambda x: (1 - mfn(x, _t)).mean(), p)
+            print(f"  {step:>5}  {corr.item():>8.4f}  {loss.item():>8.4f}  {gn_s:>10.5f}  {hod:>10.6f}")
+        opt.step()
+    print()
+
+
+# ─── Pairwise Concordance convergence (tracked with scipy Spearman) ───────────
+for pc_mode in ("logistic", "hinge"):
+    print(f"  pairwise_concordance [{pc_mode}]  (loss = concordance, Spearman = scipy ref)")
+    print(f"  {'Step':>5}  {'Spearman':>10}  {'PC loss':>10}  {'|∇|':>10}  {'H_od':>10}")
+
+    p = pred_A.clone().detach().requires_grad_(True)
+    opt = torch.optim.Adam([p], lr=1e-2)
+    _t_pc = target_A.detach()
+    for step in range(NSTEPS):
+        opt.zero_grad()
+        # pairwise_concordance expects (batch, D); wrap the 1-D vectors
+        pc_loss = pairwise_concordance(
+            _t_pc.unsqueeze(0),
+            p.unsqueeze(0),
+            mode=pc_mode,
+            diff='relative',
+        ).squeeze()
+        pc_loss.backward()
+        gn_s = p.grad.norm().item() if p.grad is not None else float("nan")
+        if step % PRINT_EVERY == 0 or step == NSTEPS - 1:
+            with torch.no_grad():
+                sp_ref = scipy_ref(p, _t_pc)
+            hod = mean_abs_offdiag_hessian(
+                lambda x: pairwise_concordance(_t_pc.unsqueeze(0), x.unsqueeze(0), mode=pc_mode).squeeze(),
+                p,
+            )
+            print(f"  {step:>5}  {sp_ref:>10.4f}  {pc_loss.item():>10.5f}  {gn_s:>10.5f}  {hod:>10.6f}")
         opt.step()
     print()
 

@@ -49,7 +49,15 @@ def test_stacked_antisymmetric_swap_property() -> None:
     x2 = torch.randn(batch, n_reactions, d)
 
     # Keep dropout off so the two calls use the same deterministic mapping.
-    model = AntisymmetricFunc(d=d, k=16, rank=8, n_layers=3, activation="softsign", dropout=0.0)
+    model = AntisymmetricFunc(
+        d=d,
+        k=16,
+        rank=8,
+        n_layers_cross=3,
+        n_layers_self=0,
+        activation_cross="softsign",
+        dropout=0.0,
+    )
     model.eval()
 
     _assert_antisymmetric(model, x1, x2)
@@ -60,7 +68,15 @@ def test_stacked_antisymmetric_zero_on_diagonal() -> None:
     batch, n_reactions, d = 2, 8, 10
     x = torch.randn(batch, n_reactions, d)
 
-    model = AntisymmetricFunc(d=d, k=12, rank=6, n_layers=2, activation="tanh", dropout=0.0)
+    model = AntisymmetricFunc(
+        d=d,
+        k=12,
+        rank=6,
+        n_layers_cross=2,
+        n_layers_self=0,
+        activation_cross="tanh",
+        dropout=0.0,
+    )
     model.eval()
 
     _assert_zero_on_diagonal(model, x)
@@ -82,7 +98,14 @@ def test_stacked_output_is_nontrivial() -> None:
     d = 13
     x1 = torch.randn(5, 6, d)
     x2 = torch.randn(5, 6, d)
-    model = AntisymmetricFunc(d=d, k=16, rank=8, n_layers=3, dropout=0.0)
+    model = AntisymmetricFunc(
+        d=d,
+        k=16,
+        rank=8,
+        n_layers_cross=3,
+        n_layers_self=0,
+        dropout=0.0,
+    )
     model.eval()
     y = model(x1, x2)
     assert y.abs().max() > 1e-4, "Output is trivially zero."
@@ -96,7 +119,7 @@ def test_output_shapes() -> None:
 
     for model in [
         BiLinAntisymmetricFunc(d=d, k=4, rank=3),
-        AntisymmetricFunc(d=d, k=12, rank=4, n_layers=2, dropout=0.0),
+        AntisymmetricFunc(d=d, k=12, rank=4, n_layers_cross=2, n_layers_self=0, dropout=0.0),
     ]:
         model.eval()
         assert model(x1, x2).shape == (batch, n_reactions)
@@ -109,7 +132,7 @@ def test_rejects_mismatched_shapes() -> None:
 
 
 def test_rejects_wrong_dimension() -> None:
-    model = AntisymmetricFunc(d=8, k=12, rank=4, n_layers=2, dropout=0.0)
+    model = AntisymmetricFunc(d=8, k=12, rank=4, n_layers_cross=2, n_layers_self=0, dropout=0.0)
     with pytest.raises(ValueError, match="expected last dimension"):
         model(torch.randn(2, 5, 10), torch.randn(2, 5, 10))
 
@@ -125,8 +148,29 @@ def test_gradients_flow_to_all_parameters() -> None:
     d = 10
     x1 = torch.randn(2, 3, d)
     x2 = torch.randn(2, 3, d)
-    model = AntisymmetricFunc(d=d, k=8, rank=4, n_layers=3, dropout=0.0)
+    model = AntisymmetricFunc(
+        d=d,
+        k=8,
+        rank=4,
+        n_layers_cross=3,
+        n_layers_self=0,
+        activation_cross="softsign",
+        dropout=0.0,
+    )
     loss = model(x1, x2).sum()
     loss.backward()
     for name, p in model.named_parameters():
         assert p.grad is not None and p.grad.abs().max() > 0, f"No gradient for {name}"
+
+
+def test_stacked_default_config_is_antisymmetric() -> None:
+    torch.manual_seed(40)
+    batch, n_reactions, d = 3, 4, 12
+    x1 = torch.randn(batch, n_reactions, d)
+    x2 = torch.randn(batch, n_reactions, d)
+
+    # Default constructor includes the self pathway; subtraction must preserve antisymmetry.
+    model = AntisymmetricFunc(d=d, k=10, rank=5, dropout=0.0)
+    model.eval()
+
+    _assert_antisymmetric(model, x1, x2)

@@ -23,26 +23,26 @@ def _make_random_graph(num_nodes: int, num_edges: int, seed: int = 0) -> torch.T
     return torch.stack([src[mask], tgt[mask]], dim=0)
 
 
-def _time_forward(fn, repeats: int = 12, warmup: int = 3) -> float:
+def _time_forward(fn, device: torch.device, repeats: int = 12, warmup: int = 3) -> float:
     """Return average forward time in seconds for one timing run."""
     for _ in range(warmup):
         fn()
 
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     start = time.perf_counter()
     for _ in range(repeats):
         fn()
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     end = time.perf_counter()
     return (end - start) / repeats
 
 
-def _time_forward_avg(fn, runs: int = 5, repeats: int = 12, warmup: int = 3) -> float:
+def _time_forward_avg(fn, device: torch.device, runs: int = 5, repeats: int = 12, warmup: int = 3) -> float:
     """Return the mean forward time in seconds across several timing runs."""
-    return sum(_time_forward(fn, repeats=repeats, warmup=warmup) for _ in range(runs)) / runs
+    return sum(_time_forward(fn, device=device, repeats=repeats, warmup=warmup) for _ in range(runs)) / runs
 
 
 def _run_gcn(conv: GCNConv, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
@@ -92,8 +92,8 @@ def _bench_on_device(device: torch.device) -> None:
 
         torch.testing.assert_close(rea_out, gcn_out, rtol=1e-5, atol=1e-5)
 
-        gcn_time = _time_forward_avg(lambda: _run_gcn(gcn, x, edge_index), runs=5)
-        rea_time = _time_forward_avg(lambda: _run_rea(rea, x, edge_index), runs=5)
+        gcn_time = _time_forward_avg(lambda: _run_gcn(gcn, x, edge_index), device=device, runs=5)
+        rea_time = _time_forward_avg(lambda: _run_rea(rea, x, edge_index), device=device, runs=5)
         speedup = gcn_time / rea_time if rea_time > 0 else float("inf")
 
         print(
@@ -111,7 +111,9 @@ def test_reareaconv_matches_gcnconv_and_reports_timing(capfd=None) -> None:
     """ReaReaConv should match GCNConv on a random graph and stay in the same runtime class."""
     _bench_on_device(torch.device("cpu"))
 
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        _bench_on_device(torch.device("cuda:1"))
+    elif torch.cuda.is_available():
         _bench_on_device(torch.device("cuda"))
     else:
         print("cuda unavailable; skipped GPU timing")

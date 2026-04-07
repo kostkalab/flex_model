@@ -22,10 +22,6 @@ different concordant/discordant assignments. The forward signature is
                       current_fluxes_dict={("R", "to", "R"): current_fluxes})
 
 Input x is always batched: shape (batch, n_nodes, channels).
-
-This layer is intended for static graphs only: the edge_index topology is
-assumed to be fixed across calls. The normalization is cached on first use;
-if the graph changes, create a new module instance rather than reusing this one.
 """
 
 import torch
@@ -204,11 +200,12 @@ class ReaReaConv(torch.nn.Module):
         else:
             self.register_parameter("bias", None)
 
-        # Cached normalization for the single static topology this layer is built for.
+        # Normalization cache — registered as buffers so they move with .to(device)
+        # Populated lazily on first forward call
         self.register_buffer("_cached_edge_index", None, persistent=False)
         self.register_buffer("_cached_norm", None, persistent=False)
+        self.register_buffer("_hash_positions", None, persistent=False)
         self._cached_n_orig: Optional[int] = None
-        self.register_buffer("_offdiag_mask", None, persistent=False)
 
         self.reset_parameters()
 
@@ -222,27 +219,37 @@ class ReaReaConv(torch.nn.Module):
             zeros(self.bias)
 
     def _get_norm(self, edge_index: Tensor, n_nodes: int) -> tuple[Tensor, Tensor, int]:
-        """Compute normalization for the current static graph topology.
+        """Get cached normalization, recompute if edge_index changed.
 
-        The layer is designed for one fixed topology, so we cache the first
-        computed normalization and reuse it on subsequent calls.
+        All cached tensors are non-persistent buffers, so they move with the
+        model on .to(device) / .cuda() without manual device management.
         """
-        if self._cached_norm is not None:
+        n_edges = edge_index.shape[1]
+
+        # Allocate hash positions if needed (also a buffer, moves with model)
+        if self._hash_positions is None or self._hash_positions.shape[0] < n_edges:
+            self._hash_positions = torch.arange(
+                n_edges, device=edge_index.device, dtype=edge_index.dtype
+            ) + 1
+
+        pos = self._hash_positions[:n_edges]
+        hash_src = int((edge_index[0] * pos).sum().item())
+        hash_tgt = int((edge_index[1] * pos).sum().item())
+        key = (n_edges, n_nodes, hash_src, hash_tgt)
+
+        # Check cache
+        if self._cached_norm is not None and getattr(self, "_cache_key", None) == key:
             return self._cached_edge_index, self._cached_norm, self._cached_n_orig
 
-        edge_index_out, norm, n_orig = _compute_gcn_norm(edge_index, n_nodes, self.add_self_loops)
+        # Recompute
+        edge_index_out, norm, n_orig = _compute_gcn_norm(
+            edge_index, n_nodes, self.add_self_loops
+        )
         self._cached_edge_index = edge_index_out
         self._cached_norm = norm
         self._cached_n_orig = n_orig
+        self._cache_key = key
         return edge_index_out, norm, n_orig
-
-    def _get_offdiag_mask(self, weight: Tensor) -> Tensor:
-        """Return a cached off-diagonal mask matching the given weight shape."""
-        if self._offdiag_mask is None or self._offdiag_mask.shape != weight.shape:
-            self._offdiag_mask = 1.0 - torch.eye(
-                weight.shape[0], weight.shape[1], device=weight.device, dtype=weight.dtype
-            )
-        return self._offdiag_mask
 
     def forward(
         self,
@@ -336,12 +343,21 @@ class ReaReaConv(torch.nn.Module):
 
     @classmethod
     def from_halfspace_init(cls, dim: int, f_disc_orig: Tensor, **kwargs) -> "ReaReaConv":
-        """Initialize with halfspace geometry.
+        """Initialize with halfspace geometry encoding flux coupling physics.
 
-        A_conc (concordant) = swap [[0, I], [I, 0]]
-            -> cross-half similarity: substrate . product
-        A_disc (discordant) = identity
-            -> same-half similarity: substrate . substrate + product . product
+        A_conc (concordant) = +swap [[0, I], [I, 0]]
+            Cross-half interaction with positive sign: "your product feeds
+            my substrate, reinforce me." Captures relay coupling.
+
+        A_disc (discordant) = -I
+            Same-half interaction with negative sign: "you compete for my
+            substrate (or flood my product pool), suppress me."
+            Captures competitive/shared-pool coupling.
+
+        Interpolation: (1 - f_disc) * (+swap) + f_disc * (-I)
+            f_disc=0: pure positive cross-half coupling
+            f_disc=1: pure negative same-half coupling
+            f_disc=0.5: partial cancellation (ambiguous edge)
 
         Args:
             dim: Embedding dimension (must be even).
@@ -352,11 +368,14 @@ class ReaReaConv(torch.nn.Module):
         half = dim // 2
 
         with torch.no_grad():
-            conv.lin_disc.weight.data.copy_(torch.eye(dim))
+            # A_conc = +swap (cross-half, positive coupling)
             swap = torch.zeros(dim, dim)
             swap[:half, half:] = torch.eye(half)
             swap[half:, :half] = torch.eye(half)
             conv.lin_conc.weight.data.copy_(swap)
+
+            # A_disc = -I (same-half, negative coupling)
+            conv.lin_disc.weight.data.copy_(-torch.eye(dim))
 
         return conv
 
@@ -369,10 +388,10 @@ class ReaReaConv(torch.nn.Module):
         s_disc: Optional[Tensor] = None,
         **kwargs,
     ) -> "ReaReaConv":
-        """Initialize from diagonal scale vectors.
+        """Initialize from diagonal scale vectors with flux coupling signs.
 
-        A_conc = swap @ diag(s_conc)
-        A_disc = diag(s_disc)
+        A_conc = +swap @ diag(s_conc)   (cross-half, positive coupling)
+        A_disc = -diag(s_disc)          (same-half, negative coupling)
 
         Args:
             dim: Embedding dimension (must be even).
@@ -390,12 +409,15 @@ class ReaReaConv(torch.nn.Module):
             s_disc = torch.ones(dim)
 
         with torch.no_grad():
-            conv.lin_disc.weight.data.copy_(torch.diag(s_disc))
+            # A_conc = +swap @ diag(s_conc)
             diag_conc = torch.diag(s_conc)
             swap = torch.zeros(dim, dim)
             swap[:half, half:] = torch.eye(half)
             swap[half:, :half] = torch.eye(half)
             conv.lin_conc.weight.data.copy_(swap @ diag_conc)
+
+            # A_disc = -diag(s_disc)
+            conv.lin_disc.weight.data.copy_(-torch.diag(s_disc))
 
         return conv
 
@@ -413,7 +435,8 @@ class ReaReaConv(torch.nn.Module):
             return torch.tensor(0.0, device=self.lin.weight.device)
 
         def _offdiag_l1(w: Tensor) -> Tensor:
-            return (w * self._get_offdiag_mask(w)).abs().sum()
+            mask = 1.0 - torch.eye(w.shape[0], w.shape[1], device=w.device)
+            return (w * mask).abs().sum()
 
         return _offdiag_l1(self.lin_conc.weight) + _offdiag_l1(self.lin_disc.weight)
 
@@ -423,7 +446,7 @@ class ReaReaConv(torch.nn.Module):
             return {}
 
         def _offdiag_frac(w: Tensor) -> float:
-            mask = self._get_offdiag_mask(w)
+            mask = 1.0 - torch.eye(w.shape[0], w.shape[1], device=w.device)
             return ((w * mask).norm() / (w.norm() + 1e-12)).item()
 
         w_c = self.lin_conc.weight.data
@@ -438,3 +461,4 @@ class ReaReaConv(torch.nn.Module):
             "offdiag_disc_frac": _offdiag_frac(w_d),
             "conc_disc_cosine": cos,
         }
+

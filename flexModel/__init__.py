@@ -10,7 +10,7 @@ Main components:
     - Utilities: Correlation metrics, batch normalization, nullspace projection
 """
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 from .flex_module import FlexModule
 from .flex_gnn import FlexGNN, FluxHead, FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv_GGConv_LW

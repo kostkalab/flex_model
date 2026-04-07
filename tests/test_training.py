@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from flexModel import FlexModule
-from flexModel.flex_gnn_v2 import FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv_GGConv_LW, FlexGNN_Disc_GGConv, FlexGNN_Disc_GGConv_LW
+from flexModel.flex_gnn import FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv_GGConv_LW, FlexGNN_Disc_GGConv, FlexGNN_Disc_GGConv_LW
 
 
 def create_flex_module(n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=32, use_layer_weights=False, use_disc=False):

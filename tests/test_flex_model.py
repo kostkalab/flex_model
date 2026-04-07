@@ -3,7 +3,7 @@
 import pytest
 import torch
 import torch_geometric
-from flexModel.flex_gnn_v2 import FlexGNN_GCNConv_GGConv, FlexGNN_Disc_GGConv
+from flexModel.flex_gnn import FlexGNN_GCNConv_GGConv, FlexGNN_Disc_GGConv
 from flexModel.flex_module import FlexModule
 
 

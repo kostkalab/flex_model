@@ -3,7 +3,8 @@ import torch
 import lightning as L
 from torch_geometric.data import HeteroData
 
-from .utils import sim_cor, diff_spearman
+from .utils import sim_cor, kendall_tau
+from .pairwise_concordance import pairwise_concordance
 
 class FlexModule(L.LightningModule):
     """Lightning module for metabolic flux prediction from gene expression.
@@ -55,7 +56,7 @@ class FlexModule(L.LightningModule):
         Mcr: torch.Tensor,
         Mmg: torch.Tensor,
         Mmr: torch.Tensor,
-        cor_wts: torch.Tensor,
+        cor_wts: torch.Tensor | None = None,
         gen_emb: torch.Tensor | None = None,
         rea_emb: torch.Tensor | None = None,
         flx_project: bool = False,
@@ -77,6 +78,11 @@ class FlexModule(L.LightningModule):
         )
         
         self.register_buffer("cor_wts", cor_wts)
+        if cor_wts is not None and not torch.allclose(cor_wts, torch.ones_like(cor_wts)):
+            raise ValueError(
+                "Non-uniform cor_wts are not supported with pairwise concordance. "
+                "Pass None or all-ones weights."
+            )
 
         # - make eids parameters of the model
         #   so that they are put on the proper device
@@ -182,22 +188,30 @@ class FlexModule(L.LightningModule):
         return torch.nn.functional.relu(-flxs).square().sum(dim=1)
 
     def loss_cor(self, ge: torch.Tensor, flxs: torch.Tensor) -> torch.Tensor:
-        """Module-level Spearman correlation loss: 1 - ρ(M_g·g_std, M_r·|v|_std) (shape: batch_size)."""
+        """Module-level pairwise concordance loss (shape: batch_size).
+
+        Projects gene expression and flux magnitudes into module space,
+        then measures ranking agreement via pairwise concordance with
+        relative differences.
+        """
         ge_sdt = ge - ge.mean(dim=1, keepdim=True)
         ge_sdt = ge_sdt / (ge_sdt.std(dim=1, keepdim=True) + 1e-7)
         flxs_sdt = flxs.abs() - flxs.abs().mean(dim=1, keepdim=True)
         flxs_sdt = flxs_sdt / (flxs_sdt.std(dim=1, keepdim=True) + 1e-7)
-        return torch.ones(ge.shape[0], device=ge.device) - diff_spearman(
-            (self.Mmg @ ge_sdt.t()).t(),
-            (self.Mmr @ flxs_sdt.t()).t(),
-            wts=self.cor_wts,
-        )
+        a = (self.Mmg @ ge_sdt.t()).t()      # (batch, n_modules)
+        b = (self.Mmr @ flxs_sdt.t()).t()    # (batch, n_modules)
+        return pairwise_concordance(a, b, diff="relative")
 
     def loss_sco(self, ge: torch.Tensor, flxs: torch.Tensor) -> torch.Tensor:
-        """Sample similarity correlation loss: 1 - sim_cor(v, g) (shape: batch_size)."""
+        """Sample similarity concordance loss (shape: batch_size).
+
+        Measures ranking agreement between pairwise sample similarities in
+        flux vs expression space.  Returns the same scalar for every sample
+        in the batch (similarity is a batch-level property).
+        """
         flxs_n = flxs - flxs.mean(dim=0, keepdim=True)
         ge_n = ge - ge.mean(dim=0, keepdim=True)
-        return torch.ones(ge.shape[0], device=ge.device) - sim_cor(flxs_n, ge_n)
+        return sim_cor(flxs_n, ge_n).expand(ge.shape[0])
 
     def loss_ent(self, flxs: torch.Tensor) -> torch.Tensor:
         """Entropy loss: Σ p log(p) where p = |v|/Σ|v| (shape: batch_size).
@@ -282,6 +296,31 @@ class FlexModule(L.LightningModule):
 
         return {"G": gen_emb, "R": rea_emb}
 
+    def _compute_tau(self, ge: torch.Tensor, flxs: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Compute Kendall tau diagnostics for cor and sco (no grad, cheap)."""
+        with torch.no_grad():
+            # Module-level tau (matches loss_cor projection)
+            ge_sdt = ge - ge.mean(dim=1, keepdim=True)
+            ge_sdt = ge_sdt / (ge_sdt.std(dim=1, keepdim=True) + 1e-7)
+            flxs_sdt = flxs.abs() - flxs.abs().mean(dim=1, keepdim=True)
+            flxs_sdt = flxs_sdt / (flxs_sdt.std(dim=1, keepdim=True) + 1e-7)
+            a_cor = (self.Mmg @ ge_sdt.t()).t()
+            b_cor = (self.Mmr @ flxs_sdt.t()).t()
+            tau_cor = kendall_tau(a_cor, b_cor).mean()
+
+            # Sample similarity tau (matches sim_cor projection)
+            flxs_n = flxs - flxs.mean(dim=0, keepdim=True)
+            ge_n = ge - ge.mean(dim=0, keepdim=True)
+            flx_u = flxs_n / flxs_n.norm(dim=1, keepdim=True)
+            ge_u = ge_n / ge_n.norm(dim=1, keepdim=True)
+            sim_f = flx_u @ flx_u.t()
+            sim_g = ge_u @ ge_u.t()
+            n = sim_f.shape[0]
+            idx = torch.triu_indices(n, n, offset=1, device=ge.device)
+            tau_sco = kendall_tau(sim_f[idx[0], idx[1]], sim_g[idx[0], idx[1]])
+
+        return {"tau_cor": tau_cor, "tau_sco": tau_sco}
+
     def training_step(self, batch, batch_idx):
         """Compute training loss for one batch.
         
@@ -306,6 +345,10 @@ class FlexModule(L.LightningModule):
         self.log("trn_loss-ent", (lses[4] * self.loss_lms[4]).detach(), prog_bar=True)
         self.log("trn_loss-all", loss.detach(), prog_bar=True)
 
+        taus = self._compute_tau(x, flxs_p if flxs_p is not None else flxs)
+        self.log("trn_tau-cor", taus["tau_cor"], prog_bar=False)
+        self.log("trn_tau-sco", taus["tau_sco"], prog_bar=False)
+
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -329,6 +372,10 @@ class FlexModule(L.LightningModule):
         self.log("val_loss-sco", (lses[3] * self.loss_lms[3]).detach(), prog_bar=True)
         self.log("val_loss-ent", (lses[4] * self.loss_lms[4]).detach(), prog_bar=True)
         self.log("val_loss-all", loss.detach(), prog_bar=True)
+
+        taus = self._compute_tau(x, flxs_p if flxs_p is not None else flxs)
+        self.log("val_tau-cor", taus["tau_cor"], prog_bar=False)
+        self.log("val_tau-sco", taus["tau_sco"], prog_bar=False)
 
         return loss
 

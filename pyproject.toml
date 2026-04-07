@@ -30,12 +30,10 @@ classifiers = [
 # Direct pip install will NOT work correctly due to:
 # - PyTorch needing CUDA-specific wheels from pytorch.org index
 # - PyG extensions needing compilation against installed PyTorch version
-# - torchsort requiring --no-build-isolation to avoid ABI mismatch
 dependencies = [
     "torch>=2.8.0",
     "torch-geometric>=2.6.0",
     "lightning>=2.0.0",
-    "torchsort>=0.1.9",
     "numpy>=1.26.0",
 ]
 

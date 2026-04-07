@@ -79,8 +79,7 @@ def create_flex_module(n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=3
     for m in range(n_modules):
         Mmr[m, torch.randperm(n_reactions)[:torch.randint(2, 6, (1,)).item()]] = 1.0
 
-    cor_wts = torch.rand(n_modules) + 0.5
-    cor_wts = cor_wts / cor_wts.sum()
+    cor_wts = torch.ones(n_modules)
 
     gen_emb = torch.randn(n_genes, gene_edim)
     rea_emb = torch.randn(n_reactions, reaction_edim)

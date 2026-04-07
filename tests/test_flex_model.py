@@ -65,8 +65,7 @@ def test_flex_module_forward_pass(use_disc):
         Mmr[module_idx, rxn_indices] = 1.0
     
     # Create random module weights for correlation loss
-    cor_wts = torch.rand(n_modules) + 0.5  # weights between 0.5 and 1.5
-    cor_wts = cor_wts / cor_wts.sum()  # normalize to sum to 1
+    cor_wts = torch.ones(n_modules)
     
     # Create random gene and reaction embeddings
     gen_emb = torch.randn(n_genes, gene_edim)

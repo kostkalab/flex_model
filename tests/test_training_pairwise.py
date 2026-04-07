@@ -5,55 +5,9 @@ import math
 import torch
 from scipy.stats import spearmanr as scipy_spearman
 
-from flexModel import utils as flex_utils
-from flexModel import flex_module as flex_module_impl
 from flexModel.pairwise_concordance import pairwise_concordance
 
 from tests.test_training import create_flex_module
-
-
-PAIRWISE_MODE = "hinge"
-
-def sim_cor2(
-    flx: torch.Tensor, ge: torch.Tensor, scale: bool = True
-) -> torch.Tensor:
-    """Pearson similarity correlation between flux and expression spaces.
-
-    For each pair of samples, computes cosine similarity on centered vectors
-    (= Pearson correlation), then measures concordance between flux-space
-    and expression-space similarity profiles.
-
-    L2 norms are detached: exact Pearson forward, O(1) gradient backward.
-    Centering is not detached: weak O(1/N) coupling, informative gradient.
-
-    Args:
-        flx: Predicted fluxes, shape (n_samples, n_reactions)
-        ge: Gene expression values, shape (n_samples, n_genes)
-        scale: If True, center and L2-normalize (Pearson similarity)
-
-    Returns:
-        Scalar correlation between flux and expression similarity profiles
-    """
-    assert flx.shape[0] == ge.shape[0]
-
-    if scale:
-        flx_c = flx - flx.mean(dim=0, keepdim=True)
-        ge_c = ge - ge.mean(dim=0, keepdim=True)
-        flx_n = flx_c / flx_c.norm(dim=1, keepdim=True).detach()
-        ge_n = ge_c / ge_c.norm(dim=1, keepdim=True).detach()
-    else:
-        flx_n = flx
-        ge_n = ge
-
-    sim_f = flx_n @ flx_n.t()
-    sim_g = ge_n @ ge_n.t()
-
-    n = sim_f.shape[0]
-    idx = torch.triu_indices(n, n, offset=1, device=sim_f.device)
-    sim_fv = sim_f[idx[0], idx[1]]
-    sim_gv = sim_g[idx[0], idx[1]]
-
-    return flex_utils.diff_spearman(sim_fv, sim_gv)
 
 
 def _spearman_rho(x: torch.Tensor, y: torch.Tensor) -> float:
@@ -126,24 +80,6 @@ def current_task_weights(step, total_steps, model, period=50  ):
     if total.abs().item() > 0:
         weights = weights / total * base_weights.sum()
     return weights.to(device=base_weights.device, dtype=base_weights.dtype)
-
-
-def pairwise_as_similarity(pred, target, wts=None, regularization_strength=1e-2):
-    """Adapt pairwise concordance loss to the correlation-style API used by the model."""
-    if pred.dim() == 1:
-        pred = pred.unsqueeze(0)
-        target = target.unsqueeze(0)
-
-    loss = pairwise_concordance(pred, target, mode=PAIRWISE_MODE)
-    return 1 - loss
-
-
-def install_pairwise_concordance(monkeypatch):
-    """Route both diff_spearman call sites through pairwise concordance."""
-    monkeypatch.setattr(flex_module_impl, "diff_spearman", pairwise_as_similarity)
-    monkeypatch.setattr(flex_utils, "diff_spearman", pairwise_as_similarity)
-    monkeypatch.setattr(flex_module_impl, "sim_cor", sim_cor2)
-    monkeypatch.setattr(flex_utils, "sim_cor", sim_cor2)
 
 
 def report_loss_components(model, ge, task_weights=None):
@@ -289,10 +225,9 @@ def format_loss_line(step, model, ge, task_weights=None):
 
 
 @pytest.mark.parametrize('use_disc', [False, True])
-def test_model_overfits_random_data_pairwise(monkeypatch, use_disc):
+def test_model_overfits_random_data_pairwise(use_disc):
     """Test that model can overfit a small random training set using pairwise concordance."""
     print("\n🧪 Testing standard FlexGNN training with pairwise concordance on random data...")
-    install_pairwise_concordance(monkeypatch)
 
     torch.manual_seed(42)
     model, n_genes, _ = create_flex_module(n_genes=100, n_reactions=100, use_layer_weights=False, use_disc=use_disc)
@@ -358,10 +293,9 @@ def test_model_overfits_random_data_pairwise(monkeypatch, use_disc):
 
 
 @pytest.mark.parametrize('use_disc', [False, True])
-def test_model_with_layer_weights_overfits_pairwise(monkeypatch, use_disc):
+def test_model_with_layer_weights_overfits_pairwise(use_disc):
     """Test that model with layer weights can overfit random data using pairwise concordance."""
     print("\n🧪 Testing FlexGNN with layer weights and pairwise concordance on random data...")
-    install_pairwise_concordance(monkeypatch)
 
     torch.manual_seed(42)
     model, n_genes, _ = create_flex_module(n_genes=100, n_reactions=100, use_layer_weights=True, use_disc=use_disc)

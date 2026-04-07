@@ -17,12 +17,12 @@ from .flex_gnn import FlexGNN, FluxHead, FlexGNN_GCNConv_GGConv, FlexGNN_GCNConv
 from .conv_gatedGraphConv import ResGatedConv
 from .conv_gadconv import GADConv
 from .utils import (
-    diff_spearman,
-    wcor,
+    kendall_tau,
     sim_cor,
     MeanBatchNorm1d,
     get_S_NSprojectorSR,
 )
+from .pairwise_concordance import pairwise_concordance
 
 __all__ = [
     "FlexModule",
@@ -32,8 +32,8 @@ __all__ = [
     "FlexGNN_GCNConv_GGConv_LW",
     "ResGatedConv",
     "GADConv",
-    "diff_spearman",
-    "wcor",
+    "pairwise_concordance",
+    "kendall_tau",
     "sim_cor",
     "MeanBatchNorm1d",
     "get_S_NSprojectorSR",

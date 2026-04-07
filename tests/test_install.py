@@ -12,7 +12,7 @@ def test_imports():
     from flexModel import ResGatedConv, GADConv
     print("✓ Convolution layers imported successfully")
     
-    from flexModel import diff_spearman, wcor, sim_cor, MeanBatchNorm1d, get_S_NSprojectorSR
+    from flexModel import pairwise_concordance, kendall_tau, sim_cor, MeanBatchNorm1d, get_S_NSprojectorSR
     print("✓ Utility functions imported successfully")
     
     # Test version

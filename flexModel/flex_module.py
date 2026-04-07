@@ -1,25 +1,28 @@
-import math
-import torch
-import lightning as L
-from torch_geometric.data import HeteroData
+from __future__ import annotations
 
-from .utils import sim_cor, kendall_tau
+import math
+
+import lightning as L
+import torch
+
 from .pairwise_concordance import pairwise_concordance
+from .utils import kendall_tau, sim_cor
+
 
 class FlexModule(L.LightningModule):
     """Lightning module for metabolic flux prediction from gene expression.
-    
+
     Wraps a GNN model for training with multiple loss components that enforce
     biological constraints (flux balance, positivity) and consistency between
     predicted fluxes and gene expression patterns (correlation, similarity).
-    
+
     Loss Components:
         L_fb (Flux Balance): Enforces stoichiometric constraints S·v = 0 or projection consistency
         L_pos (Positivity): Penalizes negative fluxes to encourage forward reactions
         L_cor (Correlation): Module-level Spearman correlation between expression and flux magnitude
         L_sco (Similarity): Sample-wise similarity preservation between expression and flux spaces
         L_ent (Entropy): With l_ent > 0, encourages uniform distributions; for sparsity use l_ent < 0
-    
+
     Args:
         gnn: The GNN model that predicts fluxes from gene/reaction embeddings
         eid_g2r: Edge index tensor for gene→reaction edges, shape (2, E_gr)
@@ -38,7 +41,7 @@ class FlexModule(L.LightningModule):
         l_ent: Weight for entropy loss component. Default: 0.0
         lopt_lr: Learning rate for Adam optimizer. Default: 1e-3
         NSP: Nullspace projector (square root), shape (n_null, n_reactions). Required if flx_project=True
-    
+
     Attributes:
         loss_lms: Tensor of loss component weights [l_fb, l_pos, l_cor, l_sco, l_ent]
         eid: Dictionary mapping edge types to edge indices
@@ -72,13 +75,16 @@ class FlexModule(L.LightningModule):
         self.gnn = gnn
         self.flx_project = flx_project
         self.save_hyperparameters(ignore=["gnn", "Mcr", "Mmg", "Mmr", "cor_wts"])
-        
+
         self.register_buffer(
-            "loss_lms", torch.tensor([l_fb, l_pos, l_cor, l_sco, l_ent], dtype=torch.float32)
+            "loss_lms",
+            torch.tensor([l_fb, l_pos, l_cor, l_sco, l_ent], dtype=torch.float32),
         )
-        
+
         self.register_buffer("cor_wts", cor_wts)
-        if cor_wts is not None and not torch.allclose(cor_wts, torch.ones_like(cor_wts)):
+        if cor_wts is not None and not torch.allclose(
+            cor_wts, torch.ones_like(cor_wts)
+        ):
             raise ValueError(
                 "Non-uniform cor_wts are not supported with pairwise concordance. "
                 "Pass None or all-ones weights."
@@ -144,10 +150,10 @@ class FlexModule(L.LightningModule):
 
     def forward(self, ge: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Predict metabolic fluxes from gene expression.
-        
+
         Args:
             ge: Gene expression values, shape (batch_size, n_genes)
-        
+
         Returns:
             flxs: Predicted fluxes (L1-normalized and scaled), shape (batch_size, n_reactions)
             flxs_p: Projected fluxes (if flx_project=True), else None
@@ -198,8 +204,8 @@ class FlexModule(L.LightningModule):
         ge_sdt = ge_sdt / (ge_sdt.std(dim=1, keepdim=True) + 1e-7)
         flxs_sdt = flxs.abs() - flxs.abs().mean(dim=1, keepdim=True)
         flxs_sdt = flxs_sdt / (flxs_sdt.std(dim=1, keepdim=True) + 1e-7)
-        a = (self.Mmg @ ge_sdt.t()).t()      # (batch, n_modules)
-        b = (self.Mmr @ flxs_sdt.t()).t()    # (batch, n_modules)
+        a = (self.Mmg @ ge_sdt.t()).t()  # (batch, n_modules)
+        b = (self.Mmr @ flxs_sdt.t()).t()  # (batch, n_modules)
         return pairwise_concordance(a, b, diff="relative")
 
     def loss_sco(self, ge: torch.Tensor, flxs: torch.Tensor) -> torch.Tensor:
@@ -215,7 +221,8 @@ class FlexModule(L.LightningModule):
 
     def loss_ent(self, flxs: torch.Tensor) -> torch.Tensor:
         """Entropy loss: Σ p log(p) where p = |v|/Σ|v| (shape: batch_size).
-        Negative entropy — minimizing with l_ent > 0 encourages uniformity; l_ent < 0 encourages sparsity."""
+        Negative entropy — minimizing with l_ent > 0 encourages uniformity; l_ent < 0 encourages sparsity.
+        """
         flux_prob = flxs.abs()
         flux_prob = flux_prob / (flux_prob.sum(dim=1, keepdim=True) + 1e-7)
         return (flux_prob * torch.log(flux_prob + 1e-7)).sum(dim=1)
@@ -241,16 +248,16 @@ class FlexModule(L.LightningModule):
 
     def get_gen_rea_emb(self, ge) -> dict[str, torch.Tensor]:
         """Prepare gene and reaction embeddings for GNN input.
-        
+
         Embedding Strategy:
             - If precomputed embeddings provided: Use them (weighted by expression for genes)
             - If not provided: Learn embeddings during training
                 * Genes: Learned per-gene embeddings (or raw expression if ge_edim=1)
                 * Reactions: Single shared embedding for all reactions
-        
+
         Args:
             ge: Gene expression values, shape (batch_size, n_genes)
-        
+
         Returns:
             Dictionary with keys "G" (gene embeddings) and "R" (reaction embeddings),
             both with shape (batch_size, n_nodes, embedding_dim)
@@ -258,9 +265,7 @@ class FlexModule(L.LightningModule):
         # Reaction embeddings
         if self.rea_emb_tt is not None:
             # Use precomputed reaction embeddings (expand to batch size)
-            rea_emb = self.rea_emb_tt.expand(
-                ge.shape[0], self.gnn.nr, self.gnn.re_edim
-            )
+            rea_emb = self.rea_emb_tt.expand(ge.shape[0], self.gnn.nr, self.gnn.re_edim)
         else:
             # Learn single shared embedding for all reactions
             rea_emb = self.r_embed(
@@ -272,9 +277,7 @@ class FlexModule(L.LightningModule):
         # Gene embeddings (weighted by expression values)
         if self.gen_emb_tt is not None:
             # Use precomputed gene embeddings, weighted by expression
-            gen_emb = self.gen_emb_tt.expand(
-                ge.shape[0], ge.shape[1], self.gnn.ge_edim
-            )
+            gen_emb = self.gen_emb_tt.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)
             gen_emb = gen_emb * ge.unsqueeze(2)  # Element-wise multiply by expression
         else:
             # Learn gene embeddings during training
@@ -283,12 +286,8 @@ class FlexModule(L.LightningModule):
                 gen_emb = ge.unsqueeze(2)
             else:
                 # Multi-dimensional: learn per-gene embeddings
-                gen_emb = self.g_embed(
-                    torch.arange(ge.shape[1], device=self.device)
-                )
-                gen_emb = gen_emb.expand(
-                    ge.shape[0], ge.shape[1], self.gnn.ge_edim
-                )
+                gen_emb = self.g_embed(torch.arange(ge.shape[1], device=self.device))
+                gen_emb = gen_emb.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)
                 # Softmax normalization for learned embeddings
                 gen_emb = torch.nn.functional.softmax(gen_emb, dim=2)
                 # Weight embeddings by expression: (batch, genes, edim) * (batch, genes, 1)
@@ -296,7 +295,9 @@ class FlexModule(L.LightningModule):
 
         return {"G": gen_emb, "R": rea_emb}
 
-    def _compute_tau(self, ge: torch.Tensor, flxs: torch.Tensor) -> dict[str, torch.Tensor]:
+    def _compute_tau(
+        self, ge: torch.Tensor, flxs: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
         """Compute Kendall tau diagnostics for cor and sco (no grad, cheap)."""
         with torch.no_grad():
             # Module-level tau (matches loss_cor projection)
@@ -323,11 +324,11 @@ class FlexModule(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Compute training loss for one batch.
-        
+
         Args:
             batch: Tuple where first element is gene expression tensor
             batch_idx: Batch index (unused)
-        
+
         Returns:
             Weighted sum of all loss components
         """
@@ -353,11 +354,11 @@ class FlexModule(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """Compute validation loss for one batch.
-        
+
         Args:
             batch: Tuple where first element is gene expression tensor
             batch_idx: Batch index (unused)
-        
+
         Returns:
             Weighted sum of all loss components
         """
@@ -381,7 +382,7 @@ class FlexModule(L.LightningModule):
 
     def configure_optimizers(self):
         """Configure Adam optimizer with learning rate from hyperparameters.
-        
+
         Returns:
             Configured optimizer instance
         """

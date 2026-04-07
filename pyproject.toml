@@ -58,11 +58,15 @@ include = ["flexModel*"]
 version = {attr = "flexModel.__version__"}
 
 [tool.black]
-line-length = 100
+line-length = 88
 target-version = ["py310", "py311"]
 
+[tool.isort]
+profile = "black"
+line_length = 88
+
 [tool.ruff]
-line-length = 100
+line-length = 88
 target-version = "py310"
 select = ["E", "F", "W", "I", "N", "UP"]
 ignore = ["E501"]  # Line too long (handled by black)

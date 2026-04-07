@@ -24,11 +24,11 @@ different concordant/discordant assignments. The forward signature is
 Input x is always batched: shape (batch, n_nodes, channels).
 """
 
+from __future__ import annotations
+
 import torch
 from torch import Tensor
 from torch.nn import Parameter
-from typing import Optional
-
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import zeros
 
@@ -85,7 +85,9 @@ def compute_dynamic_f_disc(
 
 
 def _compute_gcn_norm(
-    edge_index: Tensor, n_nodes: int, add_self_loops: bool = True,
+    edge_index: Tensor,
+    n_nodes: int,
+    add_self_loops: bool = True,
 ) -> tuple[Tensor, Tensor, int]:
     """Compute GCNConv-style symmetric normalization D^{-1/2} A D^{-1/2}.
 
@@ -170,7 +172,7 @@ class ReaReaConv(torch.nn.Module):
         in_channels: int,
         out_channels: int,
         use_disc: bool = False,
-        f_disc_orig: Optional[Tensor] = None,
+        f_disc_orig: Tensor | None = None,
         temperature: float = 1.0,
         add_self_loops: bool = True,
         bias: bool = True,
@@ -205,7 +207,7 @@ class ReaReaConv(torch.nn.Module):
         self.register_buffer("_cached_edge_index", None, persistent=False)
         self.register_buffer("_cached_norm", None, persistent=False)
         self.register_buffer("_hash_positions", None, persistent=False)
-        self._cached_n_orig: Optional[int] = None
+        self._cached_n_orig: int | None = None
 
         self.reset_parameters()
 
@@ -228,9 +230,10 @@ class ReaReaConv(torch.nn.Module):
 
         # Allocate hash positions if needed (also a buffer, moves with model)
         if self._hash_positions is None or self._hash_positions.shape[0] < n_edges:
-            self._hash_positions = torch.arange(
-                n_edges, device=edge_index.device, dtype=edge_index.dtype
-            ) + 1
+            self._hash_positions = (
+                torch.arange(n_edges, device=edge_index.device, dtype=edge_index.dtype)
+                + 1
+            )
 
         pos = self._hash_positions[:n_edges]
         hash_src = int((edge_index[0] * pos).sum().item())
@@ -255,7 +258,7 @@ class ReaReaConv(torch.nn.Module):
         self,
         x: Tensor,
         edge_index: Tensor,
-        current_fluxes: Optional[Tensor] = None,
+        current_fluxes: Tensor | None = None,
     ) -> Tensor:
         """Forward pass.
 
@@ -308,10 +311,12 @@ class ReaReaConv(torch.nn.Module):
             self_loop_zeros = torch.zeros(
                 batch, n_self_loops, device=f_disc.device, dtype=f_disc.dtype
             )
-            f_disc_full = torch.cat([f_disc, self_loop_zeros], dim=1)  # (batch, n_edges)
+            f_disc_full = torch.cat(
+                [f_disc, self_loop_zeros], dim=1
+            )  # (batch, n_edges)
 
-            x_conc = self.lin_conc(x)    # (batch, n_nodes, out_ch)
-            x_disc = self.lin_disc(x)    # (batch, n_nodes, out_ch)
+            x_conc = self.lin_conc(x)  # (batch, n_nodes, out_ch)
+            x_disc = self.lin_disc(x)  # (batch, n_nodes, out_ch)
             out_ch = x_conc.shape[-1]
 
             x_conc_j = x_conc[:, src, :]  # (batch, n_edges, out_ch)
@@ -342,7 +347,9 @@ class ReaReaConv(torch.nn.Module):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_halfspace_init(cls, dim: int, f_disc_orig: Tensor, **kwargs) -> "ReaReaConv":
+    def from_halfspace_init(
+        cls, dim: int, f_disc_orig: Tensor, **kwargs
+    ) -> "ReaReaConv":
         """Initialize with halfspace geometry encoding flux coupling physics.
 
         A_conc (concordant) = +swap [[0, I], [I, 0]]
@@ -384,8 +391,8 @@ class ReaReaConv(torch.nn.Module):
         cls,
         dim: int,
         f_disc_orig: Tensor,
-        s_conc: Optional[Tensor] = None,
-        s_disc: Optional[Tensor] = None,
+        s_conc: Tensor | None = None,
+        s_disc: Tensor | None = None,
         **kwargs,
     ) -> "ReaReaConv":
         """Initialize from diagonal scale vectors with flux coupling signs.
@@ -461,4 +468,3 @@ class ReaReaConv(torch.nn.Module):
             "offdiag_disc_frac": _offdiag_frac(w_d),
             "conc_disc_cosine": cos,
         }
-

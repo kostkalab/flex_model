@@ -11,13 +11,13 @@ from __future__ import annotations
 from typing import Literal
 
 import torch
-from torch import Tensor
 import torch.nn as nn
-
+from torch import Tensor
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _validate_pair_inputs(x1: Tensor, x2: Tensor, expected_d: int, where: str) -> None:
     """Validate paired tensor inputs used by antisymmetric modules."""
@@ -33,14 +33,14 @@ def _validate_pair_inputs(x1: Tensor, x2: Tensor, expected_d: int, where: str) -
         )
     if x1.shape[-1] != expected_d:
         raise ValueError(
-            f"{where} expected last dimension d={expected_d}, "
-            f"got d={x1.shape[-1]}."
+            f"{where} expected last dimension d={expected_d}, " f"got d={x1.shape[-1]}."
         )
 
 
 # ---------------------------------------------------------------------------
 # Building blocks
 # ---------------------------------------------------------------------------
+
 
 class ResidualBlock(nn.Module):
     """Linear -> activation -> dropout, with residual connection.
@@ -114,16 +114,17 @@ class AntisymmetricLayer(nn.Module):
         _validate_pair_inputs(x1, x2, self.d, "AntisymmetricLayer.forward")
         z = x1 - x2
         s = x1 + x2
-        lin = self.W_lin(z)                            # B x nR x K
+        lin = self.W_lin(z)  # B x nR x K
         zP = torch.einsum("bnd,kdr->bnkr", z, self.P)
         sQ = torch.einsum("bnd,kdr->bnkr", s, self.Q)
-        bili = (zP * sQ).sum(-1)                       # B x nR x K
+        bili = (zP * sQ).sum(-1)  # B x nR x K
         return lin + bili
 
 
 # ---------------------------------------------------------------------------
 # Legacy bilinear scorer
 # ---------------------------------------------------------------------------
+
 
 class BiLinAntisymmetricFunc(nn.Module):
     """Antisymmetric bilinear function with a learnable scalar gate.
@@ -184,6 +185,7 @@ class BiLinAntisymmetricFunc(nn.Module):
 # Main scorer
 # ---------------------------------------------------------------------------
 
+
 class AntisymmetricFunc(nn.Module):
     """Stacked antisymmetric function: ``(x1, x2) -> scalar``.
 
@@ -243,19 +245,23 @@ class AntisymmetricFunc(nn.Module):
 
         # -- Cross pathway (odd — bias=False everywhere) --
         self.input_layer = AntisymmetricLayer(d, k, rank)
-        self.cross_blocks = nn.ModuleList([
-            ResidualBlock(k, activation_cross, dropout, bias=False)
-            for _ in range(n_layers_cross)
-        ])
+        self.cross_blocks = nn.ModuleList(
+            [
+                ResidualBlock(k, activation_cross, dropout, bias=False)
+                for _ in range(n_layers_cross)
+            ]
+        )
         self.head = nn.Linear(k, 1, bias=False)
 
         # -- Self pathway (unconstrained — biases allowed) --
         if n_layers_self > 0:
             self.g_proj = nn.Linear(d, k)
-            self.g_blocks = nn.ModuleList([
-                ResidualBlock(k, activation_self, dropout, bias=True)
-                for _ in range(n_layers_self)
-            ])
+            self.g_blocks = nn.ModuleList(
+                [
+                    ResidualBlock(k, activation_self, dropout, bias=True)
+                    for _ in range(n_layers_self)
+                ]
+            )
             self.g_head = nn.Linear(k, 1)
         else:
             self.g_proj = None

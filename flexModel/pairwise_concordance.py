@@ -25,13 +25,15 @@ bounded O(1) products, detached denominator for clean gradients).
 See pairwise_concordance.md for mathematical details.
 """
 
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
-
 
 # ===========================================================================
 # Public API
 # ===========================================================================
+
 
 def pairwise_concordance(
     a: torch.Tensor,
@@ -98,14 +100,15 @@ def _graph_connected_zero(a, b):
 # Exact O(D²) computation
 # ===========================================================================
 
+
 def _pairwise_exact(a, b, mode, scale, diff, c):
     D = a.shape[1]
     if D < 2:
         return _graph_connected_zero(a, b)
 
     da, db = _differences(a, b, diff, c)
-    product = scale * da * db                          # (batch, D, D)
-    pair_loss = _apply_mode(product, mode)             # (batch, D, D)
+    product = scale * da * db  # (batch, D, D)
+    pair_loss = _apply_mode(product, mode)  # (batch, D, D)
 
     mask = torch.triu(torch.ones(D, D, device=a.device, dtype=torch.bool), diagonal=1)
     return pair_loss[:, mask].mean(dim=1)
@@ -114,6 +117,7 @@ def _pairwise_exact(a, b, mode, scale, diff, c):
 # ===========================================================================
 # Binned O(K²) computation
 # ===========================================================================
+
 
 def _pairwise_binned(a, b, mode, scale, diff, delta, n_pairs, c):
     """Binned approximation.  Batch-serial (Python loop over samples)."""
@@ -128,8 +132,16 @@ def _pairwise_binned(a, b, mode, scale, diff, delta, n_pairs, c):
     losses = []
     for n in range(batch):
         loss_n = _binned_single(
-            a[n], b[n], a_bin[n], b_bin[n],
-            mode, scale, diff, delta, n_pairs, c,
+            a[n],
+            b[n],
+            a_bin[n],
+            b_bin[n],
+            mode,
+            scale,
+            diff,
+            delta,
+            n_pairs,
+            c,
         )
         losses.append(loss_n)
 
@@ -144,7 +156,8 @@ def _binned_single(a_n, b_n, a_bin_n, b_bin_n, mode, scale, diff, delta, n_pairs
     cell_key = a_off * b_range + b_off
 
     unique_keys, inverse, counts = cell_key.unique(
-        return_inverse=True, return_counts=True,
+        return_inverse=True,
+        return_counts=True,
     )
     K = unique_keys.shape[0]
 
@@ -173,7 +186,9 @@ def _binned_exhaustive(cell_a, cell_b, counts, K, mode, scale, diff, c):
     pair_loss = _apply_mode(product, mode).squeeze(0)
 
     weights = counts.float().unsqueeze(1) * counts.float().unsqueeze(0)
-    mask = torch.triu(torch.ones(K, K, device=cell_a.device, dtype=torch.bool), diagonal=1)
+    mask = torch.triu(
+        torch.ones(K, K, device=cell_a.device, dtype=torch.bool), diagonal=1
+    )
 
     total_pairs = weights[mask].sum()
     if total_pairs < 1:
@@ -214,6 +229,7 @@ def _binned_sampled(cell_a, cell_b, counts, K, mode, scale, diff, n_pairs, c):
 # ===========================================================================
 # Shared helpers
 # ===========================================================================
+
 
 def _differences(a, b, diff, c):
     if diff == "absolute":

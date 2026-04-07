@@ -15,14 +15,16 @@ Covers:
 Run:  pytest tests/test_pairwise_concordance.py
 """
 
+from __future__ import annotations
+
 import sys
 import time
-import torch
+
 import numpy as np
-from scipy.stats import spearmanr, kendalltau
+import torch
+from scipy.stats import kendalltau, spearmanr
 
 from flexModel.pairwise_concordance import pairwise_concordance
-
 
 torch.manual_seed(42)
 PASS = "\033[92m✓\033[0m"
@@ -43,6 +45,7 @@ def report(name, ok, detail=""):
 # ===========================================================================
 # Data generators
 # ===========================================================================
+
 
 def make_random(batch, D, sparse_frac=0.0):
     a = torch.randn(batch, D)
@@ -93,6 +96,7 @@ def scipy_tau(a, b):
 # 1. Basic correctness
 # ===========================================================================
 
+
 def test_correctness():
     print("\n1. Basic correctness")
     batch, D = 8, 64
@@ -109,26 +113,35 @@ def test_correctness():
             a, b = make_discordant(batch, D)
             loss_disc = pairwise_concordance(a, b, mode=mode, diff=diff).mean().item()
 
-            report(f"concordant < discordant [{tag}]",
-                   loss_conc < loss_disc,
-                   f"conc={loss_conc:.4f}, disc={loss_disc:.4f}")
+            report(
+                f"concordant < discordant [{tag}]",
+                loss_conc < loss_disc,
+                f"conc={loss_conc:.4f}, disc={loss_disc:.4f}",
+            )
 
     # hinge: perfectly concordant with large separation → exactly zero
     a = torch.arange(64, dtype=torch.float32).unsqueeze(0).expand(4, -1)
     b = a * 2.0
-    loss = pairwise_concordance(a, b, mode="hinge", diff="absolute", scale=2.0).mean().item()
-    report("hinge: perfect concordance → loss ≈ 0",
-           loss < 1e-6, f"loss={loss:.8f}")
+    loss = (
+        pairwise_concordance(a, b, mode="hinge", diff="absolute", scale=2.0)
+        .mean()
+        .item()
+    )
+    report("hinge: perfect concordance → loss ≈ 0", loss < 1e-6, f"loss={loss:.8f}")
 
     # logistic: perfect concordance → loss > 0 (nonzero floor)
     loss = pairwise_concordance(a, b, mode="logistic", diff="absolute").mean().item()
-    report("logistic: perfect concordance → loss > 0 (expected floor)",
-           loss > 0.001, f"loss={loss:.4f}")
+    report(
+        "logistic: perfect concordance → loss > 0 (expected floor)",
+        loss > 0.001,
+        f"loss={loss:.4f}",
+    )
 
 
 # ===========================================================================
 # 2. Output shape and dtype
 # ===========================================================================
+
 
 def test_shapes():
     print("\n2. Output shape and dtype")
@@ -144,14 +157,15 @@ def test_shapes():
 # 3. Gradient existence and health
 # ===========================================================================
 
+
 def test_gradients():
     print("\n3. Gradient health")
 
     for D, diff, label in [
-        (64,    "absolute", "D=64 abs"),
-        (64,    "relative", "D=64 rel"),
-        (512,   "absolute", "D=512 abs"),
-        (512,   "relative", "D=512 rel"),
+        (64, "absolute", "D=64 abs"),
+        (64, "relative", "D=64 rel"),
+        (512, "absolute", "D=512 abs"),
+        (512, "relative", "D=512 rel"),
     ]:
         batch = 4
         a, b = make_random(batch, D)
@@ -163,8 +177,11 @@ def test_gradients():
         report(f"{label}: grad exists", g is not None)
         report(f"{label}: no NaN", not torch.isnan(g).any().item())
         report(f"{label}: no Inf", not torch.isinf(g).any().item())
-        report(f"{label}: grad nonzero", g.abs().max().item() > 1e-10,
-               f"|∇|_max={g.abs().max().item():.6f}")
+        report(
+            f"{label}: grad nonzero",
+            g.abs().max().item() > 1e-10,
+            f"|∇|_max={g.abs().max().item():.6f}",
+        )
 
     # gradient bounded by 2/c for relative diff
     print()
@@ -177,21 +194,24 @@ def test_gradients():
         # each pair contributes at most 2/c per element, summed over D-1 pairs
         # and divided by D(D-1)/2.  Rough bound: 4/(c * D)
         bound = 4.0 / (c_val)  # loose per-element bound
-        report(f"relative c={c_val}: |∇|_max reasonable",
-               g_max < bound * 10,  # generous factor
-               f"|∇|_max={g_max:.4f}, rough_bound={bound:.1f}")
+        report(
+            f"relative c={c_val}: |∇|_max reasonable",
+            g_max < bound * 10,  # generous factor
+            f"|∇|_max={g_max:.4f}, rough_bound={bound:.1f}",
+        )
 
 
 # ===========================================================================
 # 4. Gradient with zeros (gene expression pattern)
 # ===========================================================================
 
+
 def test_gradient_zeros():
     print("\n4. Gradient with zeros (sparse data)")
 
     for sparse_frac, D, label in [
-        (0.5, 512,   "50% zero D=512"),
-        (0.9, 512,   "90% zero D=512"),
+        (0.5, 512, "50% zero D=512"),
+        (0.9, 512, "90% zero D=512"),
         (0.5, 16384, "50% zero D=16384 binned"),
         (0.9, 16384, "90% zero D=16384 binned"),
     ]:
@@ -199,15 +219,19 @@ def test_gradient_zeros():
         b = b.clone().requires_grad_(True)
 
         use_delta = 0.01 if D > 1000 else None
-        loss = pairwise_concordance(a, b, mode="hinge", diff="absolute",
-                                    delta=use_delta)
+        loss = pairwise_concordance(
+            a, b, mode="hinge", diff="absolute", delta=use_delta
+        )
         loss.sum().backward()
 
         g = b.grad
         report(f"{label}: no NaN", not torch.isnan(g).any().item())
         report(f"{label}: no Inf", not torch.isinf(g).any().item())
-        report(f"{label}: grad nonzero", g.abs().max().item() > 1e-10,
-               f"|∇|_max={g.abs().max().item():.6f}")
+        report(
+            f"{label}: grad nonzero",
+            g.abs().max().item() > 1e-10,
+            f"|∇|_max={g.abs().max().item():.6f}",
+        )
 
     # relative diff with zeros: gradient bounded
     a, b = make_random(2, 512, sparse_frac=0.9)
@@ -222,6 +246,7 @@ def test_gradient_zeros():
 # ===========================================================================
 # 5. Optimisation drives Spearman/Kendall up + Hessian off-diag comparison
 # ===========================================================================
+
 
 def hessian_offdiag(loss_fn, a, b_param, seed=12345):
     """Mean absolute off-diagonal element of the Hessian ∂²L/∂b_i∂b_j.
@@ -287,18 +312,28 @@ def run_optim(a, b_init, steps, lr, mode, diff, delta, n_pairs, c):
     for step in range(steps):
         opt.zero_grad()
         loss = pairwise_concordance(
-            a, b_param, mode=mode, diff=diff,
-            delta=delta, n_pairs=n_pairs, c=c,
+            a,
+            b_param,
+            mode=mode,
+            diff=diff,
+            delta=delta,
+            n_pairs=n_pairs,
+            c=c,
         )
         loss.sum().backward()
         if step in log_steps:
             rho = scipy_spearman(a, b_param)
             tau = scipy_tau(a, b_param)
             grad_norm = b_param.grad.abs().mean().item()
-            trajectory.append(dict(
-                step=step, loss=loss.mean().item(),
-                rho=rho, tau=tau, grad_norm=grad_norm,
-            ))
+            trajectory.append(
+                dict(
+                    step=step,
+                    loss=loss.mean().item(),
+                    rho=rho,
+                    tau=tau,
+                    grad_norm=grad_norm,
+                )
+            )
         opt.step()
 
     return b_param, trajectory
@@ -325,26 +360,132 @@ def test_optimisation():
 
     configs = [
         # D=64: exact, compare hinge vs logistic
-        dict(D=64,  mode="hinge",    diff="absolute", delta=None,  n_pairs=None, c=0.1, steps=300, lr=0.05, label="D=64 exact hinge"),
-        dict(D=64,  mode="logistic", diff="absolute", delta=None,  n_pairs=None, c=0.1, steps=300, lr=0.05, label="D=64 exact logistic"),
-        dict(D=64,  mode="hinge",    diff="relative", delta=None,  n_pairs=None, c=0.1, steps=300, lr=0.05, label="D=64 exact rel hinge"),
+        dict(
+            D=64,
+            mode="hinge",
+            diff="absolute",
+            delta=None,
+            n_pairs=None,
+            c=0.1,
+            steps=300,
+            lr=0.05,
+            label="D=64 exact hinge",
+        ),
+        dict(
+            D=64,
+            mode="logistic",
+            diff="absolute",
+            delta=None,
+            n_pairs=None,
+            c=0.1,
+            steps=300,
+            lr=0.05,
+            label="D=64 exact logistic",
+        ),
+        dict(
+            D=64,
+            mode="hinge",
+            diff="relative",
+            delta=None,
+            n_pairs=None,
+            c=0.1,
+            steps=300,
+            lr=0.05,
+            label="D=64 exact rel hinge",
+        ),
         # D=512: exact vs binned
-        dict(D=512, mode="hinge",    diff="absolute", delta=None,  n_pairs=None, c=0.1, steps=300, lr=0.05, label="D=512 exact hinge"),
-        dict(D=512, mode="hinge",    diff="absolute", delta=0.01,  n_pairs=None, c=0.1, steps=300, lr=0.05, label="D=512 binned hinge"),
-        dict(D=512, mode="hinge",    diff="absolute", delta=0.01,  n_pairs=500,  c=0.1, steps=300, lr=0.05, label="D=512 bin-samp500 hinge"),
+        dict(
+            D=512,
+            mode="hinge",
+            diff="absolute",
+            delta=None,
+            n_pairs=None,
+            c=0.1,
+            steps=300,
+            lr=0.05,
+            label="D=512 exact hinge",
+        ),
+        dict(
+            D=512,
+            mode="hinge",
+            diff="absolute",
+            delta=0.01,
+            n_pairs=None,
+            c=0.1,
+            steps=300,
+            lr=0.05,
+            label="D=512 binned hinge",
+        ),
+        dict(
+            D=512,
+            mode="hinge",
+            diff="absolute",
+            delta=0.01,
+            n_pairs=500,
+            c=0.1,
+            steps=300,
+            lr=0.05,
+            label="D=512 bin-samp500 hinge",
+        ),
         # D=16384: binned only (exact would OOM), sparse GE
-        dict(D=16384, mode="hinge",    diff="absolute", delta=0.01,  n_pairs=None, c=0.1, steps=100, lr=0.05, label="D=16k bin-exhaust hinge",    sparse=0.5),
-        dict(D=16384, mode="hinge",    diff="absolute", delta=0.01,  n_pairs=5000, c=0.1, steps=100, lr=0.05, label="D=16k bin-samp5k hinge",   sparse=0.5),
-        dict(D=16384, mode="hinge",    diff="absolute", delta=0.01,  n_pairs=1000, c=0.1, steps=100, lr=0.05, label="D=16k bin-samp1k hinge",   sparse=0.5),
-        dict(D=16384, mode="logistic", diff="absolute", delta=0.01,  n_pairs=5000, c=0.1, steps=100, lr=0.05, label="D=16k bin-samp5k logistic", sparse=0.5),
+        dict(
+            D=16384,
+            mode="hinge",
+            diff="absolute",
+            delta=0.01,
+            n_pairs=None,
+            c=0.1,
+            steps=100,
+            lr=0.05,
+            label="D=16k bin-exhaust hinge",
+            sparse=0.5,
+        ),
+        dict(
+            D=16384,
+            mode="hinge",
+            diff="absolute",
+            delta=0.01,
+            n_pairs=5000,
+            c=0.1,
+            steps=100,
+            lr=0.05,
+            label="D=16k bin-samp5k hinge",
+            sparse=0.5,
+        ),
+        dict(
+            D=16384,
+            mode="hinge",
+            diff="absolute",
+            delta=0.01,
+            n_pairs=1000,
+            c=0.1,
+            steps=100,
+            lr=0.05,
+            label="D=16k bin-samp1k hinge",
+            sparse=0.5,
+        ),
+        dict(
+            D=16384,
+            mode="logistic",
+            diff="absolute",
+            delta=0.01,
+            n_pairs=5000,
+            c=0.1,
+            steps=100,
+            lr=0.05,
+            label="D=16k bin-samp5k logistic",
+            sparse=0.5,
+        ),
     ]
 
     # header
     # Note: H_od after optimisation may be nonzero for hinge (kink artefact)
     # and for sampled (seeded, but stochastic gradient variance).
     # The clean comparison is at the bottom on random pre-optimisation data.
-    print(f"  {'config':<30s} {'K':>6s}  {'ρ_start':>7s} {'ρ_end':>7s} {'τ_end':>7s} "
-          f"{'loss_end':>9s} {'|∇|_end':>8s} {'H_od':>10s}")
+    print(
+        f"  {'config':<30s} {'K':>6s}  {'ρ_start':>7s} {'ρ_end':>7s} {'τ_end':>7s} "
+        f"{'loss_end':>9s} {'|∇|_end':>8s} {'H_od':>10s}"
+    )
     print("  " + "-" * 102)
 
     for cfg in configs:
@@ -360,8 +501,14 @@ def test_optimisation():
             b_init = torch.randn(batch, D)
 
         b_param, traj = run_optim(
-            a, b_init, cfg["steps"], cfg["lr"],
-            cfg["mode"], cfg["diff"], cfg["delta"], cfg.get("n_pairs"),
+            a,
+            b_init,
+            cfg["steps"],
+            cfg["lr"],
+            cfg["mode"],
+            cfg["diff"],
+            cfg["delta"],
+            cfg.get("n_pairs"),
             cfg["c"],
         )
 
@@ -376,19 +523,24 @@ def test_optimisation():
         if D <= 512:
             _mode, _diff, _delta = cfg["mode"], cfg["diff"], cfg["delta"]
             _n_pairs, _c = cfg.get("n_pairs"), cfg["c"]
-            loss_fn = lambda a_, b_, m=_mode, d=_diff, dl=_delta, np=_n_pairs, cv=_c: \
-                pairwise_concordance(a_, b_, mode=m, diff=d, delta=dl, n_pairs=np, c=cv)
+            loss_fn = lambda a_, b_, m=_mode, d=_diff, dl=_delta, np=_n_pairs, cv=_c: pairwise_concordance(
+                a_, b_, mode=m, diff=d, delta=dl, n_pairs=np, c=cv
+            )
             h_od = hessian_offdiag(loss_fn, a, b_param)
             h_od_str = f"{h_od:.6f}"
         else:
             h_od_str = "skip"
 
-        print(f"  {cfg['label']:<30s} {K:>6d}  {rho_start:>7.3f} {rho_end:>7.3f} {tau_end:>7.3f} "
-              f"{loss_end:>9.4f} {grad_end:>8.5f} {h_od_str:>10s}")
+        print(
+            f"  {cfg['label']:<30s} {K:>6d}  {rho_start:>7.3f} {rho_end:>7.3f} {tau_end:>7.3f} "
+            f"{loss_end:>9.4f} {grad_end:>8.5f} {h_od_str:>10s}"
+        )
 
-        report(f"{cfg['label']}: ρ improves",
-               rho_end > rho_start + 0.05,
-               f"ρ: {rho_start:.3f} → {rho_end:.3f}, τ={tau_end:.3f}")
+        report(
+            f"{cfg['label']}: ρ improves",
+            rho_end > rho_start + 0.05,
+            f"ρ: {rho_start:.3f} → {rho_end:.3f}, τ={tau_end:.3f}",
+        )
 
     # --- H_od comparison: random vs post-optimisation, hinge vs logistic ---
     print()
@@ -405,14 +557,18 @@ def test_optimisation():
 
     h_hinge_rand = hessian_offdiag(
         lambda a_, b_: pairwise_concordance(a_, b_, mode="hinge", diff="absolute"),
-        a, b_rand.clone().requires_grad_(True),
+        a,
+        b_rand.clone().requires_grad_(True),
     )
     h_logistic_rand = hessian_offdiag(
         lambda a_, b_: pairwise_concordance(a_, b_, mode="logistic", diff="absolute"),
-        a, b_rand.clone().requires_grad_(True),
+        a,
+        b_rand.clone().requires_grad_(True),
     )
     print(f"  {'hinge (random)':<35s}  {h_hinge_rand:>10.6f}  structural: no coupling")
-    print(f"  {'logistic (random)':<35s}  {h_logistic_rand:>10.6f}  smooth sigmoid curvature")
+    print(
+        f"  {'logistic (random)':<35s}  {h_logistic_rand:>10.6f}  smooth sigmoid curvature"
+    )
 
     # post-optimisation
     torch.manual_seed(42)
@@ -420,7 +576,9 @@ def test_optimisation():
     opt = torch.optim.Adam([b_opt_hinge], lr=0.05)
     for _ in range(300):
         opt.zero_grad()
-        pairwise_concordance(a, b_opt_hinge, mode="hinge", diff="absolute").sum().backward()
+        pairwise_concordance(
+            a, b_opt_hinge, mode="hinge", diff="absolute"
+        ).sum().backward()
         opt.step()
 
     torch.manual_seed(42)
@@ -428,63 +586,82 @@ def test_optimisation():
     opt = torch.optim.Adam([b_opt_logistic], lr=0.05)
     for _ in range(300):
         opt.zero_grad()
-        pairwise_concordance(a, b_opt_logistic, mode="logistic", diff="absolute").sum().backward()
+        pairwise_concordance(
+            a, b_opt_logistic, mode="logistic", diff="absolute"
+        ).sum().backward()
         opt.step()
 
     h_hinge_opt = hessian_offdiag(
         lambda a_, b_: pairwise_concordance(a_, b_, mode="hinge", diff="absolute"),
-        a, b_opt_hinge,
+        a,
+        b_opt_hinge,
     )
     h_logistic_opt = hessian_offdiag(
         lambda a_, b_: pairwise_concordance(a_, b_, mode="logistic", diff="absolute"),
-        a, b_opt_logistic,
+        a,
+        b_opt_logistic,
     )
-    print(f"  {'hinge (post-optim)':<35s}  {h_hinge_opt:>10.6f}  relu kink artifact, not coupling")
-    print(f"  {'logistic (post-optim)':<35s}  {h_logistic_opt:>10.6f}  less curvature near optimum")
+    print(
+        f"  {'hinge (post-optim)':<35s}  {h_hinge_opt:>10.6f}  relu kink artifact, not coupling"
+    )
+    print(
+        f"  {'logistic (post-optim)':<35s}  {h_logistic_opt:>10.6f}  less curvature near optimum"
+    )
     print()
 
     # tests on random data (structural properties)
-    report("random: hinge H_od ≈ 0 (no coupling)",
-           h_hinge_rand < 1e-4,
-           f"H_od={h_hinge_rand:.6f}")
-    report("random: hinge H_od ≤ logistic H_od",
-           h_hinge_rand <= h_logistic_rand + 1e-6,
-           f"hinge={h_hinge_rand:.6f}, logistic={h_logistic_rand:.6f}")
+    report(
+        "random: hinge H_od ≈ 0 (no coupling)",
+        h_hinge_rand < 1e-4,
+        f"H_od={h_hinge_rand:.6f}",
+    )
+    report(
+        "random: hinge H_od ≤ logistic H_od",
+        h_hinge_rand <= h_logistic_rand + 1e-6,
+        f"hinge={h_hinge_rand:.6f}, logistic={h_logistic_rand:.6f}",
+    )
 
     # post-optim: hinge kink artifact is small (not catastrophic coupling)
-    report("post-optim: hinge H_od < 0.01 (kink artifact only)",
-           h_hinge_opt < 0.01,
-           f"H_od={h_hinge_opt:.6f}")
+    report(
+        "post-optim: hinge H_od < 0.01 (kink artifact only)",
+        h_hinge_opt < 0.01,
+        f"H_od={h_hinge_opt:.6f}",
+    )
 
 
 # ===========================================================================
 # 6. Binned ≈ exact consistency
 # ===========================================================================
 
+
 def test_binned_consistency():
     print("\n6. Binned ≈ exact consistency")
 
     for D, delta, tol, label in [
-        (64,  0.001, 0.05, "D=64 fine bins"),
-        (64,  0.01,  0.10, "D=64 coarse bins"),
+        (64, 0.001, 0.05, "D=64 fine bins"),
+        (64, 0.01, 0.10, "D=64 coarse bins"),
         (512, 0.001, 0.05, "D=512 fine bins"),
     ]:
         batch = 4
         a, b = make_random(batch, D)
 
         loss_exact = pairwise_concordance(a, b, mode="hinge", diff="absolute")
-        loss_binned = pairwise_concordance(a, b, mode="hinge", diff="absolute",
-                                           delta=delta)
+        loss_binned = pairwise_concordance(
+            a, b, mode="hinge", diff="absolute", delta=delta
+        )
 
         diff_val = (loss_exact - loss_binned).abs().max().item()
-        report(f"{label}: |exact - binned| < {tol}",
-               diff_val < tol,
-               f"max diff={diff_val:.6f}")
+        report(
+            f"{label}: |exact - binned| < {tol}",
+            diff_val < tol,
+            f"max diff={diff_val:.6f}",
+        )
 
 
 # ===========================================================================
 # 7. Sampled ≈ exhaustive (unbiased)
 # ===========================================================================
+
 
 def test_sampling_unbiased():
     print("\n7. Sampling ≈ exhaustive (unbiased over seeds)")
@@ -492,40 +669,46 @@ def test_sampling_unbiased():
     D, batch = 512, 4
     a, b = make_random(batch, D, sparse_frac=0.5)
 
-    loss_exhaust = pairwise_concordance(a, b, mode="hinge", diff="absolute",
-                                        delta=0.01)
+    loss_exhaust = pairwise_concordance(a, b, mode="hinge", diff="absolute", delta=0.01)
 
     # average over many sampled runs
     sampled_losses = []
     for seed in range(50):
         torch.manual_seed(seed)
-        loss_s = pairwise_concordance(a, b, mode="hinge", diff="absolute",
-                                      delta=0.01, n_pairs=500)
+        loss_s = pairwise_concordance(
+            a, b, mode="hinge", diff="absolute", delta=0.01, n_pairs=500
+        )
         sampled_losses.append(loss_s.detach())
 
     mean_sampled = torch.stack(sampled_losses).mean(dim=0)
     diff_val = (loss_exhaust - mean_sampled).abs().max().item()
-    report(f"D={D}: |exhaust - mean(sampled)| < 0.05",
-           diff_val < 0.05,
-           f"max diff={diff_val:.6f}")
+    report(
+        f"D={D}: |exhaust - mean(sampled)| < 0.05",
+        diff_val < 0.05,
+        f"max diff={diff_val:.6f}",
+    )
 
     # check variance decreases with more pairs
     var_500 = torch.stack(sampled_losses).var(dim=0).mean().item()
     sampled_2k = []
     for seed in range(50):
         torch.manual_seed(seed + 1000)
-        loss_s = pairwise_concordance(a, b, mode="hinge", diff="absolute",
-                                      delta=0.01, n_pairs=2000)
+        loss_s = pairwise_concordance(
+            a, b, mode="hinge", diff="absolute", delta=0.01, n_pairs=2000
+        )
         sampled_2k.append(loss_s.detach())
     var_2k = torch.stack(sampled_2k).var(dim=0).mean().item()
-    report("variance decreases with n_pairs",
-           var_2k < var_500,
-           f"var@500={var_500:.6f}, var@2k={var_2k:.6f}")
+    report(
+        "variance decreases with n_pairs",
+        var_2k < var_500,
+        f"var@500={var_500:.6f}, var@2k={var_2k:.6f}",
+    )
 
 
 # ===========================================================================
 # 8. Large D with sparsity (gene expression scale)
 # ===========================================================================
+
 
 def test_large_D():
     print("\n8. Large D (gene expression scale)")
@@ -539,41 +722,54 @@ def test_large_D():
 
         # binned exhaustive
         t0 = time.time()
-        loss_be = pairwise_concordance(a, b, mode="hinge", diff="absolute",
-                                       delta=0.01)
+        loss_be = pairwise_concordance(a, b, mode="hinge", diff="absolute", delta=0.01)
         loss_be.sum().backward()
         t_be = time.time() - t0
         g_be = b.grad.clone()
         b.grad = None
 
-        report(f"D={D} {label} binned exhaust: runs",
-               True, f"loss={loss_be.mean().item():.4f}, time={t_be:.2f}s")
-        report(f"D={D} {label} binned exhaust: grad ok",
-               not torch.isnan(g_be).any().item() and g_be.abs().max() > 1e-10)
+        report(
+            f"D={D} {label} binned exhaust: runs",
+            True,
+            f"loss={loss_be.mean().item():.4f}, time={t_be:.2f}s",
+        )
+        report(
+            f"D={D} {label} binned exhaust: grad ok",
+            not torch.isnan(g_be).any().item() and g_be.abs().max() > 1e-10,
+        )
 
         # binned sampled
         b.grad = None
         t0 = time.time()
-        loss_bs = pairwise_concordance(a, b, mode="hinge", diff="absolute",
-                                       delta=0.01, n_pairs=1000)
+        loss_bs = pairwise_concordance(
+            a, b, mode="hinge", diff="absolute", delta=0.01, n_pairs=1000
+        )
         loss_bs.sum().backward()
         t_bs = time.time() - t0
         g_bs = b.grad.clone()
 
-        report(f"D={D} {label} binned sampled: runs",
-               True, f"loss={loss_bs.mean().item():.4f}, time={t_bs:.2f}s")
-        report(f"D={D} {label} binned sampled: grad ok",
-               not torch.isnan(g_bs).any().item() and g_bs.abs().max() > 1e-10)
+        report(
+            f"D={D} {label} binned sampled: runs",
+            True,
+            f"loss={loss_bs.mean().item():.4f}, time={t_bs:.2f}s",
+        )
+        report(
+            f"D={D} {label} binned sampled: grad ok",
+            not torch.isnan(g_bs).any().item() and g_bs.abs().max() > 1e-10,
+        )
 
         # sampled should be faster
-        report(f"D={D} {label} sampled faster than exhaustive",
-               t_bs < t_be or t_be < 0.5,  # allow trivial case
-               f"exhaust={t_be:.2f}s, sampled={t_bs:.2f}s")
+        report(
+            f"D={D} {label} sampled faster than exhaustive",
+            t_bs < t_be or t_be < 0.5,  # allow trivial case
+            f"exhaust={t_be:.2f}s, sampled={t_bs:.2f}s",
+        )
 
 
 # ===========================================================================
 # 9. Kendall tau reference check
 # ===========================================================================
+
 
 def test_tau_reference():
     print("\n9. Daniels bound check (τ → ρ guarantee)")
@@ -595,17 +791,22 @@ def test_tau_reference():
     daniels_lower = (3 * tau_end - 1) / 2
 
     report(f"τ = {tau_end:.3f}, ρ = {rho_end:.3f}", True)
-    report(f"Daniels bound: ρ ≥ (3τ-1)/2",
-           rho_end >= daniels_lower - 0.05,
-           f"ρ={rho_end:.3f} ≥ {daniels_lower:.3f}")
-    report(f"empirical approx: ρ ≈ 1.5τ - 0.5τ³",
-           abs(rho_end - (1.5 * tau_end - 0.5 * tau_end**3)) < 0.15,
-           f"ρ={rho_end:.3f}, approx={1.5*tau_end - 0.5*tau_end**3:.3f}")
+    report(
+        f"Daniels bound: ρ ≥ (3τ-1)/2",
+        rho_end >= daniels_lower - 0.05,
+        f"ρ={rho_end:.3f} ≥ {daniels_lower:.3f}",
+    )
+    report(
+        f"empirical approx: ρ ≈ 1.5τ - 0.5τ³",
+        abs(rho_end - (1.5 * tau_end - 0.5 * tau_end**3)) < 0.15,
+        f"ρ={rho_end:.3f}, approx={1.5*tau_end - 0.5*tau_end**3:.3f}",
+    )
 
 
 # ===========================================================================
 # 10. Relative diff: c controls gradient scale
 # ===========================================================================
+
 
 def test_c_gradient_scale():
     print("\n10. Relative diff: c controls gradient magnitude")
@@ -621,17 +822,22 @@ def test_c_gradient_scale():
         grad_maxes[c_val] = b.grad.abs().max().item()
 
     # larger c → smaller gradients
-    report("c=0.01 > c=0.1 gradient",
-           grad_maxes[0.01] > grad_maxes[0.1],
-           f"|∇|: c=0.01→{grad_maxes[0.01]:.4f}, c=0.1→{grad_maxes[0.1]:.4f}")
-    report("c=0.1 > c=1.0 gradient",
-           grad_maxes[0.1] > grad_maxes[1.0],
-           f"|∇|: c=0.1→{grad_maxes[0.1]:.4f}, c=1.0→{grad_maxes[1.0]:.4f}")
+    report(
+        "c=0.01 > c=0.1 gradient",
+        grad_maxes[0.01] > grad_maxes[0.1],
+        f"|∇|: c=0.01→{grad_maxes[0.01]:.4f}, c=0.1→{grad_maxes[0.1]:.4f}",
+    )
+    report(
+        "c=0.1 > c=1.0 gradient",
+        grad_maxes[0.1] > grad_maxes[1.0],
+        f"|∇|: c=0.1→{grad_maxes[0.1]:.4f}, c=1.0→{grad_maxes[1.0]:.4f}",
+    )
 
 
 # ===========================================================================
 # 11. Edge cases
 # ===========================================================================
+
 
 def test_edge_cases():
     print("\n11. Edge cases")
@@ -643,10 +849,12 @@ def test_edge_cases():
     b = torch.ones(2, 64)
     loss_h = pairwise_concordance(a, b, mode="hinge").mean().item()
     loss_l = pairwise_concordance(a, b, mode="logistic").mean().item()
-    report("all identical: hinge = 1.0", abs(loss_h - 1.0) < 1e-6,
-           f"loss={loss_h:.6f}")
-    report("all identical: logistic = log(2)",
-           abs(loss_l - 0.6931) < 0.01, f"loss={loss_l:.4f}")
+    report("all identical: hinge = 1.0", abs(loss_h - 1.0) < 1e-6, f"loss={loss_h:.6f}")
+    report(
+        "all identical: logistic = log(2)",
+        abs(loss_l - 0.6931) < 0.01,
+        f"loss={loss_l:.4f}",
+    )
 
     # single pair (D=2)
     a = torch.tensor([[1.0, 2.0]])

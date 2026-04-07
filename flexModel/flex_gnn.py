@@ -4,16 +4,17 @@ Implements various GNN models combining gated graph convolutions with
 antisymmetric flux prediction for metabolic network modeling.
 """
 
-from typing import Callable
+from __future__ import annotations
+
+from collections.abc import Callable
 
 import torch
-from torch_geometric.nn import HeteroConv, GCNConv
 from torch.utils.checkpoint import checkpoint
+from torch_geometric.nn import GCNConv, HeteroConv
 
-from .conv_reaReaConv import ReaReaConv
 from .conv_gatedGraphConv import ResGatedConv
+from .conv_reaReaConv import ReaReaConv
 from .halfSpaceAntiSymmetric import AntisymmetricFunc
-
 
 EdgeType = tuple[str, str, str]
 ConvBuilder = Callable[[int, int], torch.nn.Module]
@@ -193,13 +194,16 @@ class FlexGNN(torch.nn.Module):
                 # Layer 1+: use flux_head on current representations
                 if idx == 0:
                     current_fluxes = torch.ones(
-                        curr_x_r.shape[0], self.nr, device=curr_x_r.device,
+                        curr_x_r.shape[0],
+                        self.nr,
+                        device=curr_x_r.device,
                     )
                 else:
                     current_fluxes = self.flux_head(curr_x_r)
 
                 out = conv(
-                    {"G": x_g, "R": curr_x_r}, ei_dict,
+                    {"G": x_g, "R": curr_x_r},
+                    ei_dict,
                     current_fluxes_dict={("R", "to", "R"): current_fluxes},
                 )
             else:
@@ -218,7 +222,9 @@ class FlexGNN(torch.nn.Module):
     # Internal: full logic in one differentiable block (checkpoint-friendly)
     # ------------------------------------------------------------------
 
-    def _run_layers_ckpt(self, x_r: torch.Tensor, x_g: torch.Tensor, *ei_values) -> torch.Tensor:
+    def _run_layers_ckpt(
+        self, x_r: torch.Tensor, x_g: torch.Tensor, *ei_values
+    ) -> torch.Tensor:
         """Checkpoint-compatible wrapper for _run_layers.
 
         Accepts flattened ei_values (tensors only) since checkpoint requires
@@ -247,7 +253,10 @@ class FlexGNN(torch.nn.Module):
             # flux_head is cheap and stays outside — no recomputation needed.
             ei_values = [ei_dict[k] for k in self._ei_keys]
             final_reprs = checkpoint(
-                self._run_layers_ckpt, x_r, x_g, *ei_values,
+                self._run_layers_ckpt,
+                x_r,
+                x_g,
+                *ei_values,
                 use_reentrant=False,
             )
         else:
@@ -260,15 +269,21 @@ class FlexGNN(torch.nn.Module):
 # Convenience wrappers
 # ------------------------------------------------------------------
 
+
 class FlexGNN_GCNConv_GGConv(torch.nn.Module):
     """Flexible GNN with ReaReaConv (GCNConv-equivalent, no disc) + ResGatedConv."""
 
     def __init__(self, nr: int, re_edim: int = 1, ge_edim: int = 1, nlayers: int = 1):
         super().__init__()
         self.model = FlexGNN(
-            nr=nr, re_edim=re_edim, ge_edim=ge_edim, nlayers=nlayers,
+            nr=nr,
+            re_edim=re_edim,
+            ge_edim=ge_edim,
+            nlayers=nlayers,
             conv_builders=_default_conv_builders(),
-            use_layer_weights=False, use_layer_norm=False, use_checkpoint=True,
+            use_layer_weights=False,
+            use_layer_norm=False,
+            use_checkpoint=True,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers
@@ -286,9 +301,14 @@ class FlexGNN_GCNConv_GGConv_LW(torch.nn.Module):
     def __init__(self, nr: int, re_edim: int = 1, ge_edim: int = 1, nlayers: int = 1):
         super().__init__()
         self.model = FlexGNN(
-            nr=nr, re_edim=re_edim, ge_edim=ge_edim, nlayers=nlayers,
+            nr=nr,
+            re_edim=re_edim,
+            ge_edim=ge_edim,
+            nlayers=nlayers,
             conv_builders=_default_conv_builders(),
-            use_layer_weights=True, use_layer_norm=True, use_checkpoint=False,
+            use_layer_weights=True,
+            use_layer_norm=True,
+            use_checkpoint=False,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers
@@ -311,14 +331,23 @@ class FlexGNN_Disc_GGConv(torch.nn.Module):
     """
 
     def __init__(
-        self, nr: int, f_disc_orig: torch.Tensor,
-        re_edim: int = 1, ge_edim: int = 1, nlayers: int = 1,
+        self,
+        nr: int,
+        f_disc_orig: torch.Tensor,
+        re_edim: int = 1,
+        ge_edim: int = 1,
+        nlayers: int = 1,
     ):
         super().__init__()
         self.model = FlexGNN(
-            nr=nr, re_edim=re_edim, ge_edim=ge_edim, nlayers=nlayers,
+            nr=nr,
+            re_edim=re_edim,
+            ge_edim=ge_edim,
+            nlayers=nlayers,
             conv_builders=_disc_conv_builders(f_disc_orig),
-            use_layer_weights=False, use_layer_norm=False, use_checkpoint=True,
+            use_layer_weights=False,
+            use_layer_norm=False,
+            use_checkpoint=True,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers
@@ -338,14 +367,23 @@ class FlexGNN_Disc_GGConv_LW(torch.nn.Module):
     """
 
     def __init__(
-        self, nr: int, f_disc_orig: torch.Tensor,
-        re_edim: int = 1, ge_edim: int = 1, nlayers: int = 1,
+        self,
+        nr: int,
+        f_disc_orig: torch.Tensor,
+        re_edim: int = 1,
+        ge_edim: int = 1,
+        nlayers: int = 1,
     ):
         super().__init__()
         self.model = FlexGNN(
-            nr=nr, re_edim=re_edim, ge_edim=ge_edim, nlayers=nlayers,
+            nr=nr,
+            re_edim=re_edim,
+            ge_edim=ge_edim,
+            nlayers=nlayers,
             conv_builders=_disc_conv_builders(f_disc_orig),
-            use_layer_weights=True, use_layer_norm=True, use_checkpoint=False,
+            use_layer_weights=True,
+            use_layer_norm=True,
+            use_checkpoint=False,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers

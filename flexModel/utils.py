@@ -9,8 +9,9 @@ Key components:
 - MeanBatchNorm1d: Custom batch normalization with only mean centering
 """
 
+from __future__ import annotations
+
 import torch
-from typing import Optional
 
 
 @torch.no_grad()
@@ -43,7 +44,7 @@ def kendall_tau(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 def sim_cor(
-    flx: torch.Tensor, ge: torch.Tensor, scale: bool = True, nsamp: Optional[int] = None
+    flx: torch.Tensor, ge: torch.Tensor, scale: bool = True, nsamp: int | None = None
 ) -> torch.Tensor:
     """Similarity-based pairwise concordance between flux and expression patterns.
 
@@ -72,7 +73,9 @@ def sim_cor(
     if nsamp is not None:
         assert isinstance(nsamp, int), "nsamp must be an integer"
         assert nsamp > 0, "nsamp must be positive"
-        assert nsamp < flx.shape[0] / 2, "nsamp must be less than half the number of rows of flx"
+        assert (
+            nsamp < flx.shape[0] / 2
+        ), "nsamp must be less than half the number of rows of flx"
         # - subsample the rows of flx and ge
         idx = torch.randperm(flx.shape[0], device=flx.device)[:nsamp]
         flx_s = flx[idx]
@@ -135,7 +138,9 @@ class MeanBatchNorm1d(torch.nn.Module):
         self.num_features = num_features
         self.momentum = momentum
         self.running_mean = torch.nn.parameter.Buffer(torch.zeros(num_features))
-        self.num_batches_tracked = torch.nn.parameter.Buffer(torch.tensor(0, dtype=torch.int64))
+        self.num_batches_tracked = torch.nn.parameter.Buffer(
+            torch.tensor(0, dtype=torch.int64)
+        )
 
     def forward(self, input):
         """Apply mean centering to input.
@@ -221,10 +226,11 @@ def get_S_NSprojectorSR(
     # Values before 'cut' index represent the range space (non-null)
     # Values after 'cut' index represent the nullspace (near-zero singular values)
     frac = S.cumsum(dim=0) / S.sum()
-    cut = (frac < thrsh).count_nonzero().item()  # Index where cumulative fraction exceeds threshold
+    cut = (
+        (frac < thrsh).count_nonzero().item()
+    )  # Index where cumulative fraction exceeds threshold
 
     # Return right singular vectors corresponding to nullspace (after cutoff)
     # Full projector would be: Vh[cut:, :].T @ Vh[cut:, :]
     # We return only the square root for memory efficiency
     return Vh[cut:, :].to(torch.float32)
-

@@ -1,12 +1,16 @@
 """Tests for antisymmetry properties of half-space antisymmetric scorers."""
 
-import torch
+from __future__ import annotations
+
 import pytest
+import torch
 
 from flexModel.halfSpaceAntiSymmetric import AntisymmetricFunc, BiLinAntisymmetricFunc
 
 
-def _assert_antisymmetric(module: torch.nn.Module, x1: torch.Tensor, x2: torch.Tensor) -> None:
+def _assert_antisymmetric(
+    module: torch.nn.Module, x1: torch.Tensor, x2: torch.Tensor
+) -> None:
     """Assert f(x1, x2) = -f(x2, x1) up to numerical tolerance."""
     y12 = module(x1, x2)
     y21 = module(x2, x1)
@@ -119,7 +123,9 @@ def test_output_shapes() -> None:
 
     for model in [
         BiLinAntisymmetricFunc(d=d, k=4, rank=3),
-        AntisymmetricFunc(d=d, k=12, rank=4, n_layers_cross=2, n_layers_self=0, dropout=0.0),
+        AntisymmetricFunc(
+            d=d, k=12, rank=4, n_layers_cross=2, n_layers_self=0, dropout=0.0
+        ),
     ]:
         model.eval()
         assert model(x1, x2).shape == (batch, n_reactions)
@@ -132,7 +138,9 @@ def test_rejects_mismatched_shapes() -> None:
 
 
 def test_rejects_wrong_dimension() -> None:
-    model = AntisymmetricFunc(d=8, k=12, rank=4, n_layers_cross=2, n_layers_self=0, dropout=0.0)
+    model = AntisymmetricFunc(
+        d=8, k=12, rank=4, n_layers_cross=2, n_layers_self=0, dropout=0.0
+    )
     with pytest.raises(ValueError, match="expected last dimension"):
         model(torch.randn(2, 5, 10), torch.randn(2, 5, 10))
 

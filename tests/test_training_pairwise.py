@@ -1,12 +1,14 @@
 """Test that the model can train and fit random data using pairwise concordance."""
 
-import pytest
+from __future__ import annotations
+
 import math
+
+import pytest
 import torch
 from scipy.stats import spearmanr as scipy_spearman
 
 from flexModel.pairwise_concordance import pairwise_concordance
-
 from tests.test_training import create_flex_module
 
 
@@ -52,12 +54,13 @@ def report_rho_components(model, ge):
     }
 
 
-def oscillating_weights(step, total_steps, n_tasks, base_weights, 
-                        amplitude=0.8, period=50):
+def oscillating_weights(
+    step, total_steps, n_tasks, base_weights, amplitude=0.8, period=50
+):
     """Task weights oscillate with opposite phases, damping over time.
-    
+
     w_i(t) = base_i * (1 + A(t) * cos(2π t/T + 2π i/n))
-    
+
     where A(t) = amplitude * (1 - t/total_steps)  # linear decay
     """
     decay = amplitude * (1 - step / total_steps)
@@ -66,7 +69,7 @@ def oscillating_weights(step, total_steps, n_tasks, base_weights,
     return base_weights * (1 + osc)
 
 
-def current_task_weights(step, total_steps, model, period=50  ):
+def current_task_weights(step, total_steps, model, period=50):
     """Get the oscillating weights for the current step on the model's loss terms."""
     base_weights = model.loss_lms.detach()
     weights = oscillating_weights(
@@ -135,7 +138,9 @@ def report_gradient_contributions(model, ge, task_weights=None):
     else:
         grad_pct = grad_norms / total_norm * 100.0
     total_objective = weighted.sum()
-    total_objective_grads = torch.autograd.grad(total_objective, params, retain_graph=False, allow_unused=True)
+    total_objective_grads = torch.autograd.grad(
+        total_objective, params, retain_graph=False, allow_unused=True
+    )
     total_sq_norm = torch.zeros((), device=weighted.device)
     for grad in total_objective_grads:
         if grad is not None:
@@ -146,77 +151,78 @@ def report_gradient_contributions(model, ge, task_weights=None):
 
 def print_loss_components(label, model, ge, task_weights=None):
     names = ["los_bf", "los_pos", "los_cor", "los_sco", "los_ent"]
-    components, loss_nrm, weighted, total = report_loss_components(model, ge, task_weights=task_weights)
-    _, grad_pct, objective_grad_norm = report_gradient_contributions(model, ge, task_weights=task_weights)
+    components, loss_nrm, weighted, total = report_loss_components(
+        model, ge, task_weights=task_weights
+    )
+    _, grad_pct, objective_grad_norm = report_gradient_contributions(
+        model, ge, task_weights=task_weights
+    )
     rho_vals = report_rho_components(model, ge)
     component_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, components)
+        f"{name}={value.item():.4f}" for name, value in zip(names, components)
     )
     nrm_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, loss_nrm)
+        f"{name}={value.item():.4f}" for name, value in zip(names, loss_nrm)
     )
     weighted_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, weighted)
+        f"{name}={value.item():.4f}" for name, value in zip(names, weighted)
     )
     grad_text = ", ".join(
-        f"{name}={pct.item():.1f}%"
-        for name, pct in zip(names, grad_pct)
+        f"{name}={pct.item():.1f}%" for name, pct in zip(names, grad_pct)
     )
     if task_weights is None:
         task_weights = torch.ones_like(weighted)
     weighted_total = weighted.sum()
     weighted_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, weighted)
+        f"{name}={value.item():.4f}" for name, value in zip(names, weighted)
     )
     print(f"{label}: unscaled_total={total.item():.4f}")
     print(f"  weighted_total: {weighted_total.item():.4f}")
     if task_weights is not None:
-        weight_text = ", ".join(f"{name}={value.item():.4f}" for name, value in zip(names, task_weights))
+        weight_text = ", ".join(
+            f"{name}={value.item():.4f}" for name, value in zip(names, task_weights)
+        )
         print(f"  task_wts: {weight_text}")
     print(f"  raw:     {component_text}")
     print(f"  nrm:     {nrm_text}")
     print(f"  weighted: {weighted_text}")
     print(f"  unscaled_terms: {weighted_text}")
-    print(f"  rho:     rho_cor={rho_vals['rho_cor']:.4f}, rho_sco={rho_vals['rho_sco']:.4f}")
+    print(
+        f"  rho:     rho_cor={rho_vals['rho_cor']:.4f}, rho_sco={rho_vals['rho_sco']:.4f}"
+    )
     print(f"  obj_grad_norm: {objective_grad_norm.item():.4f}")
     print(f"  grad%:   {grad_text}")
 
 
 def format_loss_line(step, model, ge, task_weights=None):
     names = ["los_bf", "los_pos", "los_cor", "los_sco", "los_ent"]
-    components, loss_nrm, weighted, total = report_loss_components(model, ge, task_weights=task_weights)
-    _, grad_pct, objective_grad_norm = report_gradient_contributions(model, ge, task_weights=task_weights)
+    components, loss_nrm, weighted, total = report_loss_components(
+        model, ge, task_weights=task_weights
+    )
+    _, grad_pct, objective_grad_norm = report_gradient_contributions(
+        model, ge, task_weights=task_weights
+    )
     rho_vals = report_rho_components(model, ge)
     raw_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, components)
+        f"{name}={value.item():.4f}" for name, value in zip(names, components)
     )
     nrm_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, loss_nrm)
+        f"{name}={value.item():.4f}" for name, value in zip(names, loss_nrm)
     )
     weighted_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, weighted)
+        f"{name}={value.item():.4f}" for name, value in zip(names, weighted)
     )
     grad_text = ", ".join(
-        f"{name}={pct.item():.1f}%"
-        for name, pct in zip(names, grad_pct)
+        f"{name}={pct.item():.1f}%" for name, pct in zip(names, grad_pct)
     )
     weighted_total = weighted.sum()
     unscaled_text = ", ".join(
-        f"{name}={value.item():.4f}"
-        for name, value in zip(names, weighted)
+        f"{name}={value.item():.4f}" for name, value in zip(names, weighted)
     )
     weight_text = ""
     if task_weights is not None:
         weight_text = " | task_wts: " + ", ".join(
-            f"{name}={value.item():.4f}"
-            for name, value in zip(names, task_weights)
+            f"{name}={value.item():.4f}" for name, value in zip(names, task_weights)
         )
     return (
         f"  Step {step:3d}: unscaled={total.item():.4f} "
@@ -224,15 +230,19 @@ def format_loss_line(step, model, ge, task_weights=None):
     )
 
 
-@pytest.mark.parametrize('use_disc', [False, True])
+@pytest.mark.parametrize("use_disc", [False, True])
 def test_model_overfits_random_data_pairwise(use_disc):
     """Test that model can overfit a small random training set using pairwise concordance."""
-    print("\n🧪 Testing standard FlexGNN training with pairwise concordance on random data...")
+    print(
+        "\n🧪 Testing standard FlexGNN training with pairwise concordance on random data..."
+    )
 
     torch.manual_seed(42)
-    model, n_genes, _ = create_flex_module(n_genes=100, n_reactions=100, use_layer_weights=False, use_disc=use_disc)
+    model, n_genes, _ = create_flex_module(
+        n_genes=100, n_reactions=100, use_layer_weights=False, use_disc=use_disc
+    )
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     model = model.to(device)
 
@@ -248,7 +258,7 @@ def test_model_overfits_random_data_pairwise(use_disc):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    n_steps =250
+    n_steps = 250
     losses = []
 
     for step in range(n_steps):
@@ -256,7 +266,7 @@ def test_model_overfits_random_data_pairwise(use_disc):
         loss = model.training_step((ge,), step)
         task_weights = current_task_weights(step, n_steps, model)
         components = model.losses(ge, *model(ge)).mean(dim=0)
-        #loss_nrm = components / components.detach().clamp_min(1e-12)
+        # loss_nrm = components / components.detach().clamp_min(1e-12)
         loss_nrm = components
         current_weight = model.loss_lms * task_weights
         loss_scld = loss_nrm * current_weight
@@ -272,35 +282,49 @@ def test_model_overfits_random_data_pairwise(use_disc):
     final_loss = losses[-1]
     with torch.no_grad():
         final_task_weights = current_task_weights(n_steps - 1, n_steps, model)
-        final_components, final_loss_nrm, final_loss_scld = objective_terms(model, ge, task_weights=final_task_weights)
+        final_components, final_loss_nrm, final_loss_scld = objective_terms(
+            model, ge, task_weights=final_task_weights
+        )
         final_weighted_loss = final_loss_scld.sum().item()
-    print_loss_components("Final loss components", model, ge, task_weights=final_task_weights)
+    print_loss_components(
+        "Final loss components", model, ge, task_weights=final_task_weights
+    )
     print(f"\nFinal unscaled loss: {final_loss:.4f}")
     print(f"Final weighted loss: {final_weighted_loss:.4f}")
-    print(f"Loss reduction: {initial_loss_value - final_loss:.4f} ({100*(1 - final_loss/initial_loss_value):.1f}% decrease)")
-    print(f"Loss trajectory: [{losses[0]:.3f} → {losses[9]:.3f} → {losses[19]:.3f} → {losses[29]:.3f} → {losses[39]:.3f} → {losses[49]:.3f}]")
-
-    assert final_loss < initial_loss_value, (
-        f"Model failed to reduce loss! Initial: {initial_loss_value:.4f}, Final: {final_loss:.4f}"
+    print(
+        f"Loss reduction: {initial_loss_value - final_loss:.4f} ({100*(1 - final_loss/initial_loss_value):.1f}% decrease)"
     )
+    print(
+        f"Loss trajectory: [{losses[0]:.3f} → {losses[9]:.3f} → {losses[19]:.3f} → {losses[29]:.3f} → {losses[39]:.3f} → {losses[49]:.3f}]"
+    )
+
+    assert (
+        final_loss < initial_loss_value
+    ), f"Model failed to reduce loss! Initial: {initial_loss_value:.4f}, Final: {final_loss:.4f}"
 
     reduction_ratio = final_loss / initial_loss_value
-    assert reduction_ratio < 0.9, (
-        f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease. Expected at least 10%."
+    assert (
+        reduction_ratio < 0.9
+    ), f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease. Expected at least 10%."
+
+    print(
+        "✅ Model successfully overfits random data with pairwise concordance - training mechanics work!"
     )
 
-    print("✅ Model successfully overfits random data with pairwise concordance - training mechanics work!")
 
-
-@pytest.mark.parametrize('use_disc', [False, True])
+@pytest.mark.parametrize("use_disc", [False, True])
 def test_model_with_layer_weights_overfits_pairwise(use_disc):
     """Test that model with layer weights can overfit random data using pairwise concordance."""
-    print("\n🧪 Testing FlexGNN with layer weights and pairwise concordance on random data...")
+    print(
+        "\n🧪 Testing FlexGNN with layer weights and pairwise concordance on random data..."
+    )
 
     torch.manual_seed(42)
-    model, n_genes, _ = create_flex_module(n_genes=100, n_reactions=100, use_layer_weights=True, use_disc=use_disc)
+    model, n_genes, _ = create_flex_module(
+        n_genes=100, n_reactions=100, use_layer_weights=True, use_disc=use_disc
+    )
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     model = model.to(device)
 
@@ -324,7 +348,7 @@ def test_model_with_layer_weights_overfits_pairwise(use_disc):
         loss = model.training_step((ge,), step)
         task_weights = current_task_weights(step, n_steps, model, period=200)
         components = model.losses(ge, *model(ge)).mean(dim=0)
-        #loss_nrm = components / components.detach().clamp_min(1e-12)
+        # loss_nrm = components / components.detach().clamp_min(1e-12)
         loss_nrm = components
         current_weight = model.loss_lms * task_weights
         loss_scld = loss_nrm * current_weight
@@ -339,25 +363,37 @@ def test_model_with_layer_weights_overfits_pairwise(use_disc):
 
     final_loss = losses[-1]
     with torch.no_grad():
-        final_task_weights = current_task_weights(n_steps - 1, n_steps, model, period=100)
-        final_components, final_loss_nrm, final_loss_scld = objective_terms(model, ge, task_weights=final_task_weights)
+        final_task_weights = current_task_weights(
+            n_steps - 1, n_steps, model, period=100
+        )
+        final_components, final_loss_nrm, final_loss_scld = objective_terms(
+            model, ge, task_weights=final_task_weights
+        )
         final_weighted_loss = final_loss_scld.sum().item()
-    print_loss_components("Final loss components", model, ge, task_weights=final_task_weights)
+    print_loss_components(
+        "Final loss components", model, ge, task_weights=final_task_weights
+    )
     print(f"\nFinal unscaled loss: {final_loss:.4f}")
     print(f"Final weighted loss: {final_weighted_loss:.4f}")
-    print(f"Loss reduction: {initial_loss_value - final_loss:.4f} ({100*(1 - final_loss/initial_loss_value):.1f}% decrease)")
-    print(f"Loss trajectory: [{losses[0]:.3f} → {losses[9]:.3f} → {losses[19]:.3f} → {losses[29]:.3f} → {losses[39]:.3f} → {losses[49]:.3f}]")
-
-    assert final_loss < initial_loss_value, (
-        f"Model failed to reduce loss! Initial: {initial_loss_value:.4f}, Final: {final_loss:.4f}"
+    print(
+        f"Loss reduction: {initial_loss_value - final_loss:.4f} ({100*(1 - final_loss/initial_loss_value):.1f}% decrease)"
     )
+    print(
+        f"Loss trajectory: [{losses[0]:.3f} → {losses[9]:.3f} → {losses[19]:.3f} → {losses[29]:.3f} → {losses[39]:.3f} → {losses[49]:.3f}]"
+    )
+
+    assert (
+        final_loss < initial_loss_value
+    ), f"Model failed to reduce loss! Initial: {initial_loss_value:.4f}, Final: {final_loss:.4f}"
 
     reduction_ratio = final_loss / initial_loss_value
-    assert reduction_ratio < 0.9, (
-        f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease. Expected at least 10%."
-    )
+    assert (
+        reduction_ratio < 0.9
+    ), f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease. Expected at least 10%."
 
-    print("✅ FlexGNN with layer weights successfully overfits random data using pairwise concordance!")
+    print(
+        "✅ FlexGNN with layer weights successfully overfits random data using pairwise concordance!"
+    )
 
 
 if __name__ == "__main__":

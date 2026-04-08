@@ -7,6 +7,7 @@ timing comparison on a mid-size graph that still runs quickly on CPU.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import torch
 from torch_geometric.nn import GCNConv
@@ -24,7 +25,10 @@ def _make_random_graph(num_nodes: int, num_edges: int, seed: int = 0) -> torch.T
 
 
 def _time_forward(
-    fn, device: torch.device, repeats: int = 12, warmup: int = 3
+    fn: Callable[[], torch.Tensor],
+    device: torch.device,
+    repeats: int = 12,
+    warmup: int = 3,
 ) -> float:
     """Return average forward time in seconds for one timing run."""
     for _ in range(warmup):
@@ -43,7 +47,11 @@ def _time_forward(
 
 
 def _time_forward_avg(
-    fn, device: torch.device, runs: int = 5, repeats: int = 12, warmup: int = 3
+    fn: Callable[[], torch.Tensor],
+    device: torch.device,
+    runs: int = 5,
+    repeats: int = 12,
+    warmup: int = 3,
 ) -> float:
     """Return the mean forward time in seconds across several timing runs."""
     return (
@@ -56,6 +64,7 @@ def _time_forward_avg(
 
 
 def _run_gcn(conv: GCNConv, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+    """Run a single GCNConv forward pass without gradients."""
     with torch.no_grad():
         return conv(x, edge_index)
 
@@ -63,6 +72,7 @@ def _run_gcn(conv: GCNConv, x: torch.Tensor, edge_index: torch.Tensor) -> torch.
 def _run_rea(
     conv: ReaReaConv, x: torch.Tensor, edge_index: torch.Tensor
 ) -> torch.Tensor:
+    """Run a single ReaReaConv forward pass without gradients."""
     with torch.no_grad():
         return conv(x.unsqueeze(0), edge_index).squeeze(0)
 
@@ -123,7 +133,7 @@ def _bench_on_device(device: torch.device) -> None:
         assert torch.isfinite(torch.tensor(rea_time))
 
 
-def test_reareaconv_matches_gcnconv_and_reports_timing(capfd=None) -> None:
+def test_reareaconv_matches_gcnconv_and_reports_timing() -> None:
     """ReaReaConv should match GCNConv on a random graph and stay in the same runtime class."""
     _bench_on_device(torch.device("cpu"))
 
@@ -131,9 +141,3 @@ def test_reareaconv_matches_gcnconv_and_reports_timing(capfd=None) -> None:
         _bench_on_device(torch.device("cuda:1"))
     elif torch.cuda.is_available():
         _bench_on_device(torch.device("cuda"))
-    else:
-        print("cuda unavailable; skipped GPU timing")
-
-    if capfd is not None:
-        out, _ = capfd.readouterr()
-        assert "gcn=" in out and "rea=" in out

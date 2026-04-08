@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import pytest
 import torch
-import torch_geometric
 
 from flexModel.flex_gnn import FlexGNN_Disc_GGConv, FlexGNN_GCNConv_GGConv
 from flexModel.flex_module import FlexModule
 
 
 @pytest.mark.parametrize("use_disc", [False, True])
-def test_flex_module_forward_pass(use_disc):
+def test_flex_module_forward_pass(use_disc: bool) -> None:
     """Test FlexModule forward pass with random graph structure and embeddings."""
 
     # Set random seed for reproducibility
@@ -110,10 +109,8 @@ def test_flex_module_forward_pass(use_disc):
     )
 
     # Create random gene expression data
-    ge = torch.randn(batch_size, n_genes).abs()  # positive expression values
+    ge = torch.randn(batch_size, n_genes).abs()  # (batch, n_genes)
 
-    # Test forward pass
-    print("Testing forward pass...")
     flxs, flxs_p = model.forward(ge)
 
     # Verify output shapes
@@ -122,10 +119,7 @@ def test_flex_module_forward_pass(use_disc):
         n_reactions,
     ), f"Expected shape {(batch_size, n_reactions)}, got {flxs.shape}"
     assert flxs_p is None, "Expected flxs_p to be None when flx_project=False"
-    print(f"✓ Forward pass successful. Flux shape: {flxs.shape}")
 
-    # Test loss computation
-    print("\nTesting loss computation...")
     losses = model.losses(ge, flxs, flxs_p)
 
     # Verify loss shapes
@@ -133,28 +127,14 @@ def test_flex_module_forward_pass(use_disc):
         batch_size,
         5,
     ), f"Expected loss shape {(batch_size, 5)}, got {losses.shape}"
-    print(f"✓ Loss computation successful. Loss shape: {losses.shape}")
 
-    # Print loss component means
-    loss_names = ["L_fb", "L_pos", "L_cor", "L_sco", "L_ent"]
-    print("\nMean loss components:")
-    for i, name in enumerate(loss_names):
-        print(f"  {name}: {losses[:, i].mean().item():.4f}")
-
-    # Test training step
-    print("\nTesting training step...")
-    batch = (ge,)  # Tuple format expected by training_step
+    batch = (ge,)
     loss = model.training_step(batch, batch_idx=0)
 
     # Verify loss is a scalar
     assert loss.dim() == 0, f"Expected scalar loss, got shape {loss.shape}"
-    print(f"✓ Training step successful. Total loss: {loss.item():.4f}")
 
-    # Test with nullspace projection
-    print("\n" + "=" * 60)
-    print("Testing with nullspace projection...")
-
-    # Create random nullspace projector (simplified - not true nullspace)
+    # Nullspace projection path
     n_null = n_reactions - 5  # Assume nullspace has dimension n_reactions - 5
     NSP = torch.randn(n_null, n_reactions)
     NSP = torch.nn.functional.normalize(NSP, p=2, dim=1)  # Orthonormalize rows
@@ -192,23 +172,6 @@ def test_flex_module_forward_pass(use_disc):
         batch_size,
         n_reactions,
     ), f"Expected projected flux shape {(batch_size, n_reactions)}, got {flxs_p_proj.shape}"
-    print(f"✓ Forward pass with projection successful")
-    print(f"  Flux shape: {flxs_proj.shape}")
-    print(f"  Projected flux shape: {flxs_p_proj.shape}")
 
-    # Test loss computation with projection
     losses_proj = model_proj.losses(ge, flxs_proj, flxs_p_proj)
     assert losses_proj.shape == (batch_size, 5)
-    print(f"✓ Loss computation with projection successful")
-
-    print("\nMean loss components (with projection):")
-    for i, name in enumerate(loss_names):
-        print(f"  {name}: {losses_proj[:, i].mean().item():.4f}")
-
-    print("\n" + "=" * 60)
-    print("All tests passed! ✓")
-
-
-if __name__ == "__main__":
-    test_flex_module_forward_pass(False)
-    test_flex_module_forward_pass(True)

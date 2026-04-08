@@ -8,10 +8,21 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
 from flexModel import FlexModule
+from flexModel.flex_gnn import (
+    FlexGNN_Disc_GGConv,
+    FlexGNN_Disc_GGConv_LW,
+    FlexGNN_GCNConv_GGConv,
+    FlexGNN_GCNConv_GGConv_LW,
+)
 
 
 class DetailedLoggingFlexModule(FlexModule):
-    def training_step(self, batch, batch_idx):
+    """FlexModule that logs per-term gradient norms during training."""
+
+    def training_step(
+        self, batch: tuple[torch.Tensor, ...], batch_idx: int
+    ) -> torch.Tensor:
+        """Compute loss and log per-component gradient norms."""
         x, *_ = batch
         flxs, flxs_p = self(x)
         lses = self.losses(x, flxs, flxs_p)
@@ -19,11 +30,10 @@ class DetailedLoggingFlexModule(FlexModule):
 
         l_fb, l_pos, l_cor, l_sco, l_ent = lses[0], lses[1], lses[2], lses[3], lses[4]
 
-        # Gradient calculation for each type
         opt = self.optimizers()
         opt.zero_grad()
 
-        def compute_grad_norm(loss_tensor):
+        def compute_grad_norm(loss_tensor: torch.Tensor) -> float:
             if loss_tensor.requires_grad:
                 grads = torch.autograd.grad(
                     loss_tensor,
@@ -98,22 +108,14 @@ class DetailedLoggingFlexModule(FlexModule):
         return loss
 
 
-from flexModel.flex_gnn import (
-    FlexGNN_Disc_GGConv,
-    FlexGNN_Disc_GGConv_LW,
-    FlexGNN_GCNConv_GGConv,
-    FlexGNN_GCNConv_GGConv_LW,
-)
-
-
 def create_flex_module(
-    n_genes=50,
-    n_reactions=30,
-    gene_edim=16,
-    reaction_edim=32,
-    use_layer_weights=False,
-    use_disc=False,
-):
+    n_genes: int = 50,
+    n_reactions: int = 30,
+    gene_edim: int = 16,
+    reaction_edim: int = 32,
+    use_layer_weights: bool = False,
+    use_disc: bool = False,
+) -> tuple[DetailedLoggingFlexModule, int, int]:
     """Create a FlexModule with random graph structure and embeddings."""
     n_compounds = n_reactions // 2
     n_modules = max(5, n_genes // 10)
@@ -187,7 +189,13 @@ def create_flex_module(
     return model, n_genes, n_reactions
 
 
-def make_dataloaders(n_genes, n_samples=64, batch_size=16, val_frac=0.25, seed=42):
+def make_dataloaders(
+    n_genes: int,
+    n_samples: int = 64,
+    batch_size: int = 16,
+    val_frac: float = 0.25,
+    seed: int = 42,
+) -> tuple[DataLoader, DataLoader]:
     """Create train/val DataLoaders from random gene expression data."""
     torch.manual_seed(seed)
     ge = torch.randn(n_samples, n_genes).abs()
@@ -203,7 +211,7 @@ def make_dataloaders(n_genes, n_samples=64, batch_size=16, val_frac=0.25, seed=4
 
 
 @pytest.mark.parametrize("use_disc", [False, True])
-def test_trainer_runs(use_disc):
+def test_trainer_runs(use_disc: bool) -> None:
     """Smoke test: Lightning Trainer completes fit() without errors."""
     torch.manual_seed(42)
     model, n_genes, _ = create_flex_module(
@@ -216,14 +224,14 @@ def test_trainer_runs(use_disc):
         accelerator="auto",
         enable_progress_bar=False,
         enable_model_summary=False,
+        enable_checkpointing=False,
         logger=False,
     )
     trainer.fit(model, train_dataloaders=trn_dl, val_dataloaders=val_dl)
-    print("Trainer completed successfully.")
 
 
 @pytest.mark.parametrize("use_disc", [False, True])
-def test_trainer_loss_decreases(use_disc):
+def test_trainer_loss_decreases(use_disc: bool) -> None:
     """Verify that training loss decreases over multiple epochs."""
     torch.manual_seed(42)
     model, n_genes, _ = create_flex_module(
@@ -255,19 +263,12 @@ def test_trainer_loss_decreases(use_disc):
                 }
             )
 
-            print(f"\nEpoch {trainer.current_epoch}:")
-            print(
-                f"  Losses -> Total:{l_all:.4f}  | fb:{l_fb:.4f} pos:{l_pos:.4f} cor:{l_cor:.4f} sco:{l_sco:.4f} ent:{l_ent:.4f}"
-            )
-            print(
-                f"  Grads  -> fb:{g_fb:.4f} pos:{g_pos:.4f} cor:{g_cor:.4f} sco:{g_sco:.4f} ent:{g_ent:.4f}\n"
-            )
-
     trainer = L.Trainer(
         max_epochs=10,
         accelerator="auto",
         enable_progress_bar=False,
         enable_model_summary=False,
+        enable_checkpointing=False,
         logger=False,
         callbacks=[DetailedLoggingCallback()],
     )
@@ -277,7 +278,7 @@ def test_trainer_loss_decreases(use_disc):
 
 
 @pytest.mark.parametrize("use_disc", [False, True])
-def test_trainer_with_layer_weights(use_disc):
+def test_trainer_with_layer_weights(use_disc: bool) -> None:
     """Smoke test: Trainer runs with the layer-weighted GNN variant."""
     torch.manual_seed(42)
     model, n_genes, _ = create_flex_module(
@@ -295,7 +296,7 @@ def test_trainer_with_layer_weights(use_disc):
         accelerator="auto",
         enable_progress_bar=False,
         enable_model_summary=False,
+        enable_checkpointing=False,
         logger=False,
     )
     trainer.fit(model, train_dataloaders=trn_dl, val_dataloaders=val_dl)
-    print("Trainer (layer weights) completed successfully.")

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from flexModel import FlexModule
 from flexModel.flex_gnn import (
@@ -16,13 +15,13 @@ from flexModel.flex_gnn import (
 
 
 def create_flex_module(
-    n_genes=50,
-    n_reactions=30,
-    gene_edim=16,
-    reaction_edim=32,
-    use_layer_weights=False,
-    use_disc=False,
-):
+    n_genes: int = 50,
+    n_reactions: int = 30,
+    gene_edim: int = 16,
+    reaction_edim: int = 32,
+    use_layer_weights: bool = False,
+    use_disc: bool = False,
+) -> tuple[FlexModule, int, int]:
     """Create a FlexModule with random graph structure and embeddings."""
     n_compounds = n_reactions // 2
     n_modules = max(5, n_genes // 10)
@@ -119,15 +118,12 @@ def create_flex_module(
 
 
 @pytest.mark.parametrize("use_disc", [False, True])
-def test_model_overfits_random_data(use_disc):
+def test_model_overfits_random_data(use_disc: bool) -> None:
     """Test that model can overfit a small random training set (standard FlexGNN).
 
     If the model cannot reduce loss on random data, there's likely
     a bug in the training setup, loss computation, or backpropagation.
     """
-    print("\n🧪 Testing standard FlexGNN training on random data...")
-
-    # Create model with realistic dimensions
     torch.manual_seed(42)
     model, n_genes, n_reactions = create_flex_module(
         n_genes=64, n_reactions=128, use_layer_weights=False, use_disc=use_disc
@@ -143,60 +139,34 @@ def test_model_overfits_random_data(use_disc):
         initial_loss = model.training_step((ge,), 0)
         initial_loss_value = initial_loss.item()
 
-    print(f"Initial loss: {initial_loss_value:.4f}")
-
-    # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    # Training loop
     n_steps = 50
     losses = []
-
     for step in range(n_steps):
         optimizer.zero_grad()
-
         loss = model.training_step((ge,), step)
-
         loss.backward()
         optimizer.step()
-
         losses.append(loss.item())
 
-        if step % 5 == 0:
-            print(f"  Step {step:3d}: loss = {loss.item():.4f}")
-
     final_loss = losses[-1]
-    print(f"\nFinal loss: {final_loss:.4f}")
-    print(
-        f"Loss reduction: {initial_loss_value - final_loss:.4f} ({100*(1 - final_loss/initial_loss_value):.1f}% decrease)"
-    )
-    print(
-        f"Loss trajectory: [{losses[0]:.3f} → {losses[9]:.3f} → {losses[19]:.3f} → {losses[29]:.3f} → {losses[39]:.3f} → {losses[49]:.3f}]"
-    )
-
-    # Assertions
     assert (
         final_loss < initial_loss_value
     ), f"Model failed to reduce loss! Initial: {initial_loss_value:.4f}, Final: {final_loss:.4f}"
 
-    # Should achieve some reduction (at least 10% to verify training works)
     reduction_ratio = final_loss / initial_loss_value
     assert (
         reduction_ratio < 0.9
-    ), f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease. Expected at least 10%."
-
-    print("✅ Model successfully overfits random data - training mechanics work!")
+    ), f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease."
 
 
 @pytest.mark.parametrize("use_disc", [False, True])
-def test_model_with_layer_weights_overfits(use_disc):
+def test_model_with_layer_weights_overfits(use_disc: bool) -> None:
     """Test that model with layer weights can overfit random data (FlexGNN_LW).
 
     Verifies that the layer-weighted variant also trains correctly.
     """
-    print("\n🧪 Testing FlexGNN with layer weights on random data...")
-
-    # Create model with layer weights and realistic dimensions
     torch.manual_seed(42)
     model, n_genes, n_reactions = create_flex_module(
         n_genes=64, n_reactions=128, use_layer_weights=True, use_disc=use_disc
@@ -212,51 +182,23 @@ def test_model_with_layer_weights_overfits(use_disc):
         initial_loss = model.training_step((ge,), 0)
         initial_loss_value = initial_loss.item()
 
-    print(f"Initial loss: {initial_loss_value:.4f}")
-
-    # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    # Training loop
     n_steps = 50
     losses = []
-
     for step in range(n_steps):
         optimizer.zero_grad()
-
         loss = model.training_step((ge,), step)
-
         loss.backward()
         optimizer.step()
-
         losses.append(loss.item())
 
-        if step % 5 == 0:
-            print(f"  Step {step:3d}: loss = {loss.item():.4f}")
-
     final_loss = losses[-1]
-    print(f"\nFinal loss: {final_loss:.4f}")
-    print(
-        f"Loss reduction: {initial_loss_value - final_loss:.4f} ({100*(1 - final_loss/initial_loss_value):.1f}% decrease)"
-    )
-    print(
-        f"Loss trajectory: [{losses[0]:.3f} → {losses[9]:.3f} → {losses[19]:.3f} → {losses[29]:.3f} → {losses[39]:.3f} → {losses[49]:.3f}]"
-    )
-
-    # Assertions
     assert (
         final_loss < initial_loss_value
     ), f"Model failed to reduce loss! Initial: {initial_loss_value:.4f}, Final: {final_loss:.4f}"
 
-    # Should achieve some reduction (at least 10% to verify training works)
     reduction_ratio = final_loss / initial_loss_value
     assert (
         reduction_ratio < 0.9
-    ), f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease. Expected at least 10%."
-
-    print("✅ FlexGNN with layer weights successfully overfits random data!")
-
-
-if __name__ == "__main__":
-    test_model_overfits_random_data()
-    test_model_with_layer_weights_overfits()
+    ), f"Loss reduction too small! Only {100*(1-reduction_ratio):.1f}% decrease."

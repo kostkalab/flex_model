@@ -84,11 +84,12 @@ def sim_cor(
         flx_s = flx
         ge_s = ge
 
-    # Normalize to unit vectors and compute cosine similarity matrices
-    flx_n = flx_s / flx_s.norm(dim=1, keepdim=True)
-    sim_f = flx_n @ flx_n.t()
-    ge_n = ge_s / ge_s.norm(dim=1, keepdim=True)
-    sim_g = ge_n @ ge_n.t()
+    if scale:
+        flx_s = flx_s / (flx_s.norm(dim=1, keepdim=True) + 1e-7)
+        ge_s = ge_s / (ge_s.norm(dim=1, keepdim=True) + 1e-7)
+
+    sim_f = flx_s @ flx_s.t()
+    sim_g = ge_s @ ge_s.t()
 
     # Extract upper triangle without allocating a full ones+triu mask
     n = sim_f.shape[0]

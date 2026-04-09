@@ -276,17 +276,17 @@ class FlexModule(L.LightningModule):
             term is ``None`` when nullspace projection is disabled.
         """
         x_dict = self.get_gen_rea_emb(ge)
-        flxs = self.gnn(x_dict, self.eid)
+        flxs = self.gnn(x_dict, self.eid)  # (batch, n_reactions) or (n_reactions,)
 
         if len(flxs.shape) == 1:
-            flxs = flxs.unsqueeze(0)
+            flxs = flxs.unsqueeze(0)  # (1, n_reactions)
 
         scle = math.sqrt(flxs.shape[-1])
-        flxs = flxs / (flxs.abs().sum(dim=-1, keepdim=True) + 1e-7) * scle
+        flxs = flxs / (flxs.abs().sum(dim=-1, keepdim=True) + 1e-7) * scle  # (batch, n_reactions)
 
         if self.Pi is not None:
-            flxs_p = flxs @ self.Pi.t() @ self.Pi
-            flxs_p = flxs_p / (flxs_p.abs().sum(dim=1, keepdim=True) + 1e-7) * scle
+            flxs_p = flxs @ self.Pi.t() @ self.Pi  # (batch, n_reactions)
+            flxs_p = flxs_p / (flxs_p.abs().sum(dim=1, keepdim=True) + 1e-7) * scle  # (batch, n_reactions)
         else:
             flxs_p = None
         return flxs, flxs_p
@@ -301,24 +301,24 @@ class FlexModule(L.LightningModule):
             Mapping with ``"G"`` and ``"R"`` entries ready for the hetero GNN.
         """
         if self.rea_emb_tt is not None:
-            rea_emb = self.rea_emb_tt.expand(ge.shape[0], self.gnn.nr, self.gnn.re_edim)
+            rea_emb = self.rea_emb_tt.expand(ge.shape[0], self.gnn.nr, self.gnn.re_edim)  # (batch, n_reactions, re_edim)
         else:
             rea_emb = self.r_embed(
                 torch.zeros(self.gnn.nr, dtype=torch.int64, device=self.device)
-            )
-            rea_emb = rea_emb.expand(ge.shape[0], self.gnn.nr, self.gnn.re_edim)
-            rea_emb = torch.nn.functional.softmax(rea_emb, dim=2)
+            )  # (n_reactions, re_edim)
+            rea_emb = rea_emb.expand(ge.shape[0], self.gnn.nr, self.gnn.re_edim)  # (batch, n_reactions, re_edim)
+            rea_emb = torch.nn.functional.softmax(rea_emb, dim=2)  # (batch, n_reactions, re_edim)
 
         if self.gen_emb_tt is not None:
-            gen_emb = self.gen_emb_tt.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)
-            gen_emb = gen_emb * ge.unsqueeze(2)
+            gen_emb = self.gen_emb_tt.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)  # (batch, n_genes, ge_edim)
+            gen_emb = gen_emb * ge.unsqueeze(2)  # (batch, n_genes, ge_edim)
         elif self.gnn.ge_edim == 1:
-            gen_emb = ge.unsqueeze(2)
+            gen_emb = ge.unsqueeze(2)  # (batch, n_genes, 1)
         else:
-            gen_emb = self.g_embed(torch.arange(ge.shape[1], device=self.device))
-            gen_emb = gen_emb.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)
-            gen_emb = torch.nn.functional.softmax(gen_emb, dim=2)
-            gen_emb = gen_emb * ge.unsqueeze(2)
+            gen_emb = self.g_embed(torch.arange(ge.shape[1], device=self.device))  # (n_genes, ge_edim)
+            gen_emb = gen_emb.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)  # (batch, n_genes, ge_edim)
+            gen_emb = torch.nn.functional.softmax(gen_emb, dim=2)  # (batch, n_genes, ge_edim)
+            gen_emb = gen_emb * ge.unsqueeze(2)  # (batch, n_genes, ge_edim)
 
         return {"G": gen_emb, "R": rea_emb}
 

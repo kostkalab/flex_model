@@ -12,7 +12,7 @@ Main components:
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .conv_gadconv import GADConv
 from .conv_gatedGraphConv import ResGatedConv

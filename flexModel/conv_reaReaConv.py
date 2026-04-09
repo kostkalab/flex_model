@@ -176,7 +176,7 @@ class ReaReaConv(torch.nn.Module):
         temperature: float = 1.0,
         add_self_loops: bool = True,
         bias: bool = True,
-    ):
+    ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -211,7 +211,7 @@ class ReaReaConv(torch.nn.Module):
 
         self.reset_parameters()
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         if self.use_disc:
             self.lin_conc.reset_parameters()
             self.lin_disc.reset_parameters()
@@ -348,7 +348,7 @@ class ReaReaConv(torch.nn.Module):
 
     @classmethod
     def from_halfspace_init(
-        cls, dim: int, f_disc_orig: Tensor, **kwargs
+        cls, dim: int, f_disc_orig: Tensor, **kwargs: object
     ) -> "ReaReaConv":
         """Initialize with halfspace geometry encoding flux coupling physics.
 
@@ -370,7 +370,8 @@ class ReaReaConv(torch.nn.Module):
             dim: Embedding dimension (must be even).
             f_disc_orig: Static discordant strength, shape (n_edges,).
         """
-        assert dim % 2 == 0
+        if dim % 2 != 0:
+            raise ValueError(f"dim must be even, got {dim}.")
         conv = cls(dim, dim, use_disc=True, f_disc_orig=f_disc_orig, **kwargs)
         half = dim // 2
 
@@ -393,7 +394,7 @@ class ReaReaConv(torch.nn.Module):
         f_disc_orig: Tensor,
         s_conc: Tensor | None = None,
         s_disc: Tensor | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> "ReaReaConv":
         """Initialize from diagonal scale vectors with flux coupling signs.
 
@@ -406,7 +407,8 @@ class ReaReaConv(torch.nn.Module):
             s_conc: Per-dim scales for concordant (default: ones).
             s_disc: Per-dim scales for discordant (default: ones).
         """
-        assert dim % 2 == 0
+        if dim % 2 != 0:
+            raise ValueError(f"dim must be even, got {dim}.")
         half = dim // 2
         conv = cls(dim, dim, use_disc=True, f_disc_orig=f_disc_orig, **kwargs)
 

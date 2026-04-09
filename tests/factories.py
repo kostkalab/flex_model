@@ -127,8 +127,6 @@ def create_flex_module(
         cor_wts=problem.cor_wts,
         gen_emb=problem.gen_emb,
         rea_emb=problem.rea_emb,
-        re_edim=reaction_edim,
-        ge_edim=gene_edim,
         nlayers=2,
         use_disc=use_disc,
         f_disc_orig=f_disc_orig,

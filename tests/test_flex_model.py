@@ -46,8 +46,6 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
         cor_wts=problem.cor_wts,
         gen_emb=problem.gen_emb,
         rea_emb=problem.rea_emb,
-        re_edim=reaction_edim,
-        ge_edim=gene_edim,
         nlayers=2,
         use_disc=use_disc,
         f_disc_orig=f_disc_orig,
@@ -101,8 +99,6 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
         cor_wts=problem.cor_wts,
         gen_emb=problem.gen_emb,
         rea_emb=problem.rea_emb,
-        re_edim=reaction_edim,
-        ge_edim=gene_edim,
         nlayers=2,
         use_disc=use_disc,
         f_disc_orig=f_disc_orig,
@@ -153,3 +149,19 @@ def test_legacy_gnn_wrappers_warn(
         model = wrapper_cls(nr=4, re_edim=2, ge_edim=2, nlayers=1, **kwargs)
 
     assert isinstance(model, torch.nn.Module)
+
+
+def test_flex_module_requires_dims_without_fixed_embeddings() -> None:
+    """Learned-embedding mode still requires explicit architecture widths."""
+    problem = create_random_problem(n_genes=8, n_reactions=6, gene_edim=4, reaction_edim=4)
+
+    with pytest.raises(ValueError, match="ge_edim must be provided"):
+        FlexModule(
+            eid_g2r=problem.eid_g2r,
+            eid_r2r=problem.eid_r2r,
+            Mcr=problem.Mcr,
+            Mmg=problem.Mmg,
+            Mmr=problem.Mmr,
+            gen_emb=None,
+            rea_emb=problem.rea_emb,
+        )

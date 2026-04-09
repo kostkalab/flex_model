@@ -27,8 +27,10 @@ class FlexModule(L.LightningModule):
         gen_emb: Optional fixed gene embeddings with shape ``(n_genes, gene_edim)``.
         rea_emb: Optional fixed reaction embeddings with shape
             ``(n_reactions, re_edim)``.
-        re_edim: Reaction embedding dimension.
-        ge_edim: Gene embedding dimension.
+        re_edim: Reaction embedding dimension. Required when ``rea_emb`` is not
+            provided; otherwise inferred from ``rea_emb``.
+        ge_edim: Gene embedding dimension. Required when ``gen_emb`` is not
+            provided; otherwise inferred from ``gen_emb``.
         nlayers: Number of graph-conv layers.
         use_disc: Whether to enable concordant/discordant R→R message blending.
         f_disc_orig: Static R→R edge attribute required when ``use_disc=True``.
@@ -58,8 +60,8 @@ class FlexModule(L.LightningModule):
         cor_wts: torch.Tensor | None = None,
         gen_emb: torch.Tensor | None = None,
         rea_emb: torch.Tensor | None = None,
-        re_edim: int = 1,
-        ge_edim: int = 1,
+        re_edim: int | None = None,
+        ge_edim: int | None = None,
         nlayers: int = 1,
         use_disc: bool = False,
         f_disc_orig: torch.Tensor | None = None,
@@ -76,6 +78,12 @@ class FlexModule(L.LightningModule):
         super().__init__()
         n_genes = int(Mmg.shape[1])
         n_reactions = int(Mmr.shape[1])
+        resolved_ge_edim, resolved_re_edim = self._resolve_embedding_dims(
+            gen_emb=gen_emb,
+            rea_emb=rea_emb,
+            ge_edim=ge_edim,
+            re_edim=re_edim,
+        )
         self._validate_graph_inputs(
             eid_g2r=eid_g2r,
             eid_r2r=eid_r2r,
@@ -84,15 +92,15 @@ class FlexModule(L.LightningModule):
             Mmr=Mmr,
             gen_emb=gen_emb,
             rea_emb=rea_emb,
-            ge_edim=ge_edim,
-            re_edim=re_edim,
+            ge_edim=resolved_ge_edim,
+            re_edim=resolved_re_edim,
             use_disc=use_disc,
             f_disc_orig=f_disc_orig,
         )
         self.gnn = build_flex_gnn(
             nr=n_reactions,
-            re_edim=re_edim,
-            ge_edim=ge_edim,
+            re_edim=resolved_re_edim,
+            ge_edim=resolved_ge_edim,
             nlayers=nlayers,
             use_disc=use_disc,
             f_disc_orig=f_disc_orig,
@@ -100,18 +108,20 @@ class FlexModule(L.LightningModule):
         )
         self.flx_project = flx_project
         self.save_hyperparameters(
-            ignore=[
-                "eid_g2r",
-                "eid_r2r",
-                "Mcr",
-                "Mmg",
-                "Mmr",
-                "cor_wts",
-                "gen_emb",
-                "rea_emb",
-                "NSP",
-                "f_disc_orig",
-            ]
+            {
+                "re_edim": resolved_re_edim,
+                "ge_edim": resolved_ge_edim,
+                "nlayers": nlayers,
+                "use_disc": use_disc,
+                "use_layer_weights": use_layer_weights,
+                "flx_project": flx_project,
+                "l_fb": l_fb,
+                "l_pos": l_pos,
+                "l_cor": l_cor,
+                "l_sco": l_sco,
+                "l_ent": l_ent,
+                "lopt_lr": lopt_lr,
+            }
         )
 
         self.register_buffer(
@@ -148,26 +158,48 @@ class FlexModule(L.LightningModule):
         self.g_embed = None
 
         if gen_emb is not None:
-            assert (
-                gen_emb.shape[0] == n_genes
-            ), f"{gen_emb.shape[0]} != {n_genes}"
-            assert (
-                gen_emb.shape[1] == self.gnn.ge_edim
-            ), f"{gen_emb.shape[1]} != {self.gnn.ge_edim}"
             self.register_buffer("gen_emb_tt", gen_emb)
         else:
             self.register_buffer("gen_emb_tt", None)
             if self.gnn.ge_edim > 1:
                 self.g_embed = torch.nn.Embedding(self.Mmg.shape[1], self.gnn.ge_edim)
         if rea_emb is not None:
-            assert rea_emb.shape[0] == n_reactions
-            assert (
-                rea_emb.shape[1] == self.gnn.re_edim
-            ), f"{rea_emb.shape[1]} != {self.gnn.re_edim}"
             self.register_buffer("rea_emb_tt", rea_emb)
         else:
             self.register_buffer("rea_emb_tt", None)
             self.r_embed = torch.nn.Embedding(1, self.gnn.re_edim)
+
+    @staticmethod
+    def _resolve_embedding_dims(
+        gen_emb: torch.Tensor | None,
+        rea_emb: torch.Tensor | None,
+        ge_edim: int | None,
+        re_edim: int | None,
+    ) -> tuple[int, int]:
+        """Infer embedding dimensions from fixed embeddings when available."""
+        if gen_emb is not None:
+            resolved_ge_edim = int(gen_emb.shape[1])
+            if ge_edim is not None and ge_edim != resolved_ge_edim:
+                raise ValueError(
+                    f"ge_edim={ge_edim} does not match gen_emb.shape[1]={resolved_ge_edim}."
+                )
+        elif ge_edim is not None:
+            resolved_ge_edim = ge_edim
+        else:
+            raise ValueError("ge_edim must be provided when gen_emb is None.")
+
+        if rea_emb is not None:
+            resolved_re_edim = int(rea_emb.shape[1])
+            if re_edim is not None and re_edim != resolved_re_edim:
+                raise ValueError(
+                    f"re_edim={re_edim} does not match rea_emb.shape[1]={resolved_re_edim}."
+                )
+        elif re_edim is not None:
+            resolved_re_edim = re_edim
+        else:
+            raise ValueError("re_edim must be provided when rea_emb is None.")
+
+        return resolved_ge_edim, resolved_re_edim
 
     @staticmethod
     def _validate_graph_inputs(

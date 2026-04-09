@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from tests.test_training import create_flex_module
+from tests.factories import create_flex_module
 
 
 def _oscillating_weights(

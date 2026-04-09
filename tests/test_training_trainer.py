@@ -5,15 +5,10 @@ from __future__ import annotations
 import lightning as L
 import pytest
 import torch
-from torch.utils.data import DataLoader, TensorDataset, random_split
 
 from flexModel import FlexModule
-from flexModel.flex_gnn import (
-    FlexGNN_Disc_GGConv,
-    FlexGNN_Disc_GGConv_LW,
-    FlexGNN_GCNConv_GGConv,
-    FlexGNN_GCNConv_GGConv_LW,
-)
+
+from tests.factories import create_flex_module, make_dataloaders
 
 
 class DetailedLoggingFlexModule(FlexModule):
@@ -108,114 +103,17 @@ class DetailedLoggingFlexModule(FlexModule):
         return loss
 
 
-def create_flex_module(
-    n_genes: int = 50,
-    n_reactions: int = 30,
-    gene_edim: int = 16,
-    reaction_edim: int = 32,
-    use_layer_weights: bool = False,
-    use_disc: bool = False,
-) -> tuple[DetailedLoggingFlexModule, int, int]:
-    """Create a FlexModule with random graph structure and embeddings."""
-    n_compounds = n_reactions // 2
-    n_modules = max(5, n_genes // 10)
-
-    eid_g2r_list = []
-    for gene_idx in range(n_genes):
-        n_edges = torch.randint(1, 4, (1,)).item()
-        for rxn_idx in torch.randint(0, n_reactions, (n_edges,)):
-            eid_g2r_list.append([gene_idx, rxn_idx.item()])
-    eid_g2r = torch.tensor(eid_g2r_list, dtype=torch.long).t()
-
-    eid_r2r_list = []
-    for rxn_idx in range(n_reactions):
-        for tgt in torch.randint(0, n_reactions, (3,)):
-            if tgt.item() != rxn_idx:
-                eid_r2r_list.append([rxn_idx, tgt.item()])
-    eid_r2r = torch.tensor(eid_r2r_list, dtype=torch.long).t()
-
-    Mcr = torch.randn(n_compounds, n_reactions) * 0.3
-    Mcr[torch.rand(n_compounds, n_reactions) > 0.3] = 0
-
-    Mmg = torch.zeros(n_modules, n_genes)
-    for m in range(n_modules):
-        Mmg[m, torch.randperm(n_genes)[: torch.randint(3, 9, (1,)).item()]] = 1.0
-
-    Mmr = torch.zeros(n_modules, n_reactions)
-    for m in range(n_modules):
-        Mmr[m, torch.randperm(n_reactions)[: torch.randint(2, 6, (1,)).item()]] = 1.0
-
-    cor_wts = torch.ones(n_modules)
-
-    gen_emb = torch.randn(n_genes, gene_edim)
-    rea_emb = torch.randn(n_reactions, reaction_edim)
-
-    if use_disc:
-        f_disc = torch.rand(eid_r2r.shape[1])
-        GNNCls = FlexGNN_Disc_GGConv_LW if use_layer_weights else FlexGNN_Disc_GGConv
-        gnn = GNNCls(
-            nr=n_reactions,
-            f_disc_orig=f_disc,
-            re_edim=reaction_edim,
-            ge_edim=gene_edim,
-            nlayers=2,
-        )
-    else:
-        GNNCls = (
-            FlexGNN_GCNConv_GGConv_LW if use_layer_weights else FlexGNN_GCNConv_GGConv
-        )
-        gnn = GNNCls(
-            nr=n_reactions, re_edim=reaction_edim, ge_edim=gene_edim, nlayers=2
-        )
-
-    model = DetailedLoggingFlexModule(
-        gnn=gnn,
-        eid_g2r=eid_g2r,
-        eid_r2r=eid_r2r,
-        Mcr=Mcr,
-        Mmg=Mmg,
-        Mmr=Mmr,
-        cor_wts=cor_wts,
-        gen_emb=gen_emb,
-        rea_emb=rea_emb,
-        flx_project=False,
-        l_fb=1.0,
-        l_pos=1.0,
-        l_cor=1.0,
-        l_sco=1.0,
-        l_ent=0.0,
-        lopt_lr=1e-3,
-    )
-    return model, n_genes, n_reactions
-
-
-def make_dataloaders(
-    n_genes: int,
-    n_samples: int = 64,
-    batch_size: int = 16,
-    val_frac: float = 0.25,
-    seed: int = 42,
-) -> tuple[DataLoader, DataLoader]:
-    """Create train/val DataLoaders from random gene expression data."""
-    torch.manual_seed(seed)
-    ge = torch.randn(n_samples, n_genes).abs()
-    dataset = TensorDataset(ge)
-    n_val = max(1, int(n_samples * val_frac))
-    n_trn = n_samples - n_val
-    trn_ds, val_ds = random_split(
-        dataset, [n_trn, n_val], generator=torch.Generator().manual_seed(seed)
-    )
-    trn_dl = DataLoader(trn_ds, batch_size=batch_size, shuffle=True)
-    val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    return trn_dl, val_dl
-
-
 @pytest.mark.parametrize("use_disc", [False, True])
 def test_trainer_runs(use_disc: bool) -> None:
     """Smoke test: Lightning Trainer completes fit() without errors."""
     torch.manual_seed(42)
     model, n_genes, _ = create_flex_module(
-        n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=32, use_disc=use_disc
+        n_genes=50,
+        n_reactions=30,
+        gene_edim=16,
+        reaction_edim=32,
+        use_disc=use_disc,
+        module_cls=DetailedLoggingFlexModule,
     )
     trn_dl, val_dl = make_dataloaders(n_genes, n_samples=64, batch_size=16)
 
@@ -235,7 +133,12 @@ def test_trainer_loss_decreases(use_disc: bool) -> None:
     """Verify that training loss decreases over multiple epochs."""
     torch.manual_seed(42)
     model, n_genes, _ = create_flex_module(
-        n_genes=50, n_reactions=30, gene_edim=16, reaction_edim=32, use_disc=use_disc
+        n_genes=50,
+        n_reactions=30,
+        gene_edim=16,
+        reaction_edim=32,
+        use_disc=use_disc,
+        module_cls=DetailedLoggingFlexModule,
     )
     trn_dl, val_dl = make_dataloaders(n_genes, n_samples=64, batch_size=16)
 
@@ -288,6 +191,7 @@ def test_trainer_with_layer_weights(use_disc: bool) -> None:
         reaction_edim=32,
         use_layer_weights=True,
         use_disc=use_disc,
+        module_cls=DetailedLoggingFlexModule,
     )
     trn_dl, val_dl = make_dataloaders(n_genes, n_samples=64, batch_size=16)
 

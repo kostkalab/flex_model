@@ -7,6 +7,7 @@ import torch
 
 from flexModel.flex_gnn import FlexGNN_Disc_GGConv, FlexGNN_GCNConv_GGConv
 from flexModel.flex_module import FlexModule
+from tests.factories import create_random_problem
 
 
 @pytest.mark.parametrize("use_disc", [False, True])
@@ -16,68 +17,21 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
     # Set random seed for reproducibility
     torch.manual_seed(42)
 
-    # Define dimensions
-    n_genes = 50
-    n_reactions = 30
-    n_compounds = 20
-    n_modules = 10
     batch_size = 8
     gene_edim = 16
     reaction_edim = 32
-
-    # Create random graph structure (gene-to-reaction edges)
-    # Each gene connects to 1-3 reactions
-    eid_g2r_list = []
-    for gene_idx in range(n_genes):
-        n_edges = torch.randint(1, 4, (1,)).item()
-        reaction_indices = torch.randint(0, n_reactions, (n_edges,))
-        for rxn_idx in reaction_indices:
-            eid_g2r_list.append([gene_idx, rxn_idx])
-    eid_g2r = torch.tensor(eid_g2r_list, dtype=torch.long).t()
-
-    # Create random reaction-to-reaction edges (sparse connectivity)
-    # Each reaction connects to 2-4 other reactions
-    eid_r2r_list = []
-    for rxn_idx in range(n_reactions):
-        n_edges = torch.randint(2, 5, (1,)).item()
-        target_reactions = torch.randint(0, n_reactions, (n_edges,))
-        for target_idx in target_reactions:
-            if target_idx != rxn_idx:  # no self-loops
-                eid_r2r_list.append([rxn_idx, target_idx])
-    eid_r2r = torch.tensor(eid_r2r_list, dtype=torch.long).t()
-
-    # Create random stoichiometry matrix (sparse, with positive and negative entries)
-    Mcr = torch.randn(n_compounds, n_reactions) * 0.3
-    Mcr[torch.rand(n_compounds, n_reactions) > 0.3] = 0  # Make it sparse
-
-    # Create random gene-to-module mapping (binary matrix)
-    Mmg = torch.zeros(n_modules, n_genes)
-    for module_idx in range(n_modules):
-        # Each module has 3-8 genes
-        n_genes_in_module = torch.randint(3, 9, (1,)).item()
-        gene_indices = torch.randperm(n_genes)[:n_genes_in_module]
-        Mmg[module_idx, gene_indices] = 1.0
-
-    # Create random module-to-reaction mapping (binary matrix)
-    Mmr = torch.zeros(n_modules, n_reactions)
-    for module_idx in range(n_modules):
-        # Each module has 2-5 reactions
-        n_rxns_in_module = torch.randint(2, 6, (1,)).item()
-        rxn_indices = torch.randperm(n_reactions)[:n_rxns_in_module]
-        Mmr[module_idx, rxn_indices] = 1.0
-
-    # Create random module weights for correlation loss
-    cor_wts = torch.ones(n_modules)
-
-    # Create random gene and reaction embeddings
-    gen_emb = torch.randn(n_genes, gene_edim)
-    rea_emb = torch.randn(n_reactions, reaction_edim)
+    problem = create_random_problem(
+        n_genes=50,
+        n_reactions=30,
+        gene_edim=gene_edim,
+        reaction_edim=reaction_edim,
+    )
 
     # Initialize GNN model
     if use_disc:
-        f_disc_orig = torch.rand(eid_r2r.shape[1])
+        f_disc_orig = torch.rand(problem.eid_r2r.shape[1])
         gnn = FlexGNN_Disc_GGConv(
-            nr=n_reactions,
+            nr=problem.n_reactions,
             f_disc_orig=f_disc_orig,
             re_edim=reaction_edim,
             ge_edim=gene_edim,
@@ -85,20 +39,23 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
         )
     else:
         gnn = FlexGNN_GCNConv_GGConv(
-            nr=n_reactions, re_edim=reaction_edim, ge_edim=gene_edim, nlayers=2
+            nr=problem.n_reactions,
+            re_edim=reaction_edim,
+            ge_edim=gene_edim,
+            nlayers=2,
         )
 
     # Initialize FlexModule
     model = FlexModule(
         gnn=gnn,
-        eid_g2r=eid_g2r,
-        eid_r2r=eid_r2r,
-        Mcr=Mcr,
-        Mmg=Mmg,
-        Mmr=Mmr,
-        cor_wts=cor_wts,
-        gen_emb=gen_emb,
-        rea_emb=rea_emb,
+        eid_g2r=problem.eid_g2r,
+        eid_r2r=problem.eid_r2r,
+        Mcr=problem.Mcr,
+        Mmg=problem.Mmg,
+        Mmr=problem.Mmr,
+        cor_wts=problem.cor_wts,
+        gen_emb=problem.gen_emb,
+        rea_emb=problem.rea_emb,
         flx_project=False,  # Test without nullspace projection first
         l_fb=1.0,
         l_pos=1.0,
@@ -109,15 +66,15 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
     )
 
     # Create random gene expression data
-    ge = torch.randn(batch_size, n_genes).abs()  # (batch, n_genes)
+    ge = torch.randn(batch_size, problem.n_genes).abs()  # (batch, n_genes)
 
     flxs, flxs_p = model.forward(ge)
 
     # Verify output shapes
     assert flxs.shape == (
         batch_size,
-        n_reactions,
-    ), f"Expected shape {(batch_size, n_reactions)}, got {flxs.shape}"
+        problem.n_reactions,
+    ), f"Expected shape {(batch_size, problem.n_reactions)}, got {flxs.shape}"
     assert flxs_p is None, "Expected flxs_p to be None when flx_project=False"
 
     losses = model.losses(ge, flxs, flxs_p)
@@ -135,21 +92,21 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
     assert loss.dim() == 0, f"Expected scalar loss, got shape {loss.shape}"
 
     # Nullspace projection path
-    n_null = n_reactions - 5  # Assume nullspace has dimension n_reactions - 5
-    NSP = torch.randn(n_null, n_reactions)
+    n_null = problem.n_reactions - 5
+    NSP = torch.randn(n_null, problem.n_reactions)
     NSP = torch.nn.functional.normalize(NSP, p=2, dim=1)  # Orthonormalize rows
 
     # Reinitialize model with projection
     model_proj = FlexModule(
         gnn=gnn,
-        eid_g2r=eid_g2r,
-        eid_r2r=eid_r2r,
-        Mcr=Mcr,
-        Mmg=Mmg,
-        Mmr=Mmr,
-        cor_wts=cor_wts,
-        gen_emb=gen_emb,
-        rea_emb=rea_emb,
+        eid_g2r=problem.eid_g2r,
+        eid_r2r=problem.eid_r2r,
+        Mcr=problem.Mcr,
+        Mmg=problem.Mmg,
+        Mmr=problem.Mmr,
+        cor_wts=problem.cor_wts,
+        gen_emb=problem.gen_emb,
+        rea_emb=problem.rea_emb,
         flx_project=True,
         l_fb=1.0,
         l_pos=1.0,
@@ -166,12 +123,15 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
     # Verify output shapes
     assert flxs_proj.shape == (
         batch_size,
-        n_reactions,
-    ), f"Expected shape {(batch_size, n_reactions)}, got {flxs_proj.shape}"
+        problem.n_reactions,
+    ), f"Expected shape {(batch_size, problem.n_reactions)}, got {flxs_proj.shape}"
     assert flxs_p_proj.shape == (
         batch_size,
-        n_reactions,
-    ), f"Expected projected flux shape {(batch_size, n_reactions)}, got {flxs_p_proj.shape}"
+        problem.n_reactions,
+    ), (
+        f"Expected projected flux shape {(batch_size, problem.n_reactions)}, "
+        f"got {flxs_p_proj.shape}"
+    )
 
     losses_proj = model_proj.losses(ge, flxs_proj, flxs_p_proj)
     assert losses_proj.shape == (batch_size, 5)

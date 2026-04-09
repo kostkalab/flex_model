@@ -21,6 +21,7 @@ from .flex_gnn import (
     FlexGNN_GCNConv_GGConv,
     FlexGNN_GCNConv_GGConv_LW,
     FluxHead,
+    build_flex_gnn,
 )
 from .flex_module import FlexModule
 from .pairwise_concordance import pairwise_concordance
@@ -35,6 +36,7 @@ __all__ = [
     "FlexModule",
     "FlexGNN",
     "FluxHead",
+    "build_flex_gnn",
     "FlexGNN_GCNConv_GGConv",
     "FlexGNN_GCNConv_GGConv_LW",
     "ResGatedConv",

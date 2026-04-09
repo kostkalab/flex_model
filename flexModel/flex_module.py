@@ -5,6 +5,7 @@ import math
 import lightning as L
 import torch
 
+from .flex_gnn import build_flex_gnn
 from .pairwise_concordance import pairwise_concordance
 from .utils import kendall_tau, sim_cor
 
@@ -17,7 +18,6 @@ class FlexModule(L.LightningModule):
     the outputs with biologically motivated loss terms during training.
 
     Args:
-        gnn: Graph model mapping gene/reaction embeddings to reaction fluxes.
         eid_g2r: Gene-to-reaction edge index with shape ``(2, E_gr)``.
         eid_r2r: Reaction-to-reaction edge index with shape ``(2, E_rr)``.
         Mcr: Stoichiometry matrix with shape ``(n_compounds, n_reactions)``.
@@ -27,6 +27,12 @@ class FlexModule(L.LightningModule):
         gen_emb: Optional fixed gene embeddings with shape ``(n_genes, gene_edim)``.
         rea_emb: Optional fixed reaction embeddings with shape
             ``(n_reactions, re_edim)``.
+        re_edim: Reaction embedding dimension.
+        ge_edim: Gene embedding dimension.
+        nlayers: Number of graph-conv layers.
+        use_disc: Whether to enable concordant/discordant R→R message blending.
+        f_disc_orig: Static R→R edge attribute required when ``use_disc=True``.
+        use_layer_weights: Whether to combine layer outputs with learned weights.
         flx_project: Whether to project fluxes into the stoichiometric nullspace.
         l_fb: Flux-balance loss weight.
         l_pos: Positivity loss weight.
@@ -44,7 +50,6 @@ class FlexModule(L.LightningModule):
 
     def __init__(
         self,
-        gnn: torch.nn.Module,
         eid_g2r: torch.Tensor,
         eid_r2r: torch.Tensor,
         Mcr: torch.Tensor,
@@ -53,6 +58,12 @@ class FlexModule(L.LightningModule):
         cor_wts: torch.Tensor | None = None,
         gen_emb: torch.Tensor | None = None,
         rea_emb: torch.Tensor | None = None,
+        re_edim: int = 1,
+        ge_edim: int = 1,
+        nlayers: int = 1,
+        use_disc: bool = False,
+        f_disc_orig: torch.Tensor | None = None,
+        use_layer_weights: bool = False,
         flx_project: bool = False,
         l_fb: float = 1,
         l_pos: float = 1,
@@ -63,9 +74,45 @@ class FlexModule(L.LightningModule):
         NSP: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
-        self.gnn = gnn
+        n_genes = int(Mmg.shape[1])
+        n_reactions = int(Mmr.shape[1])
+        self._validate_graph_inputs(
+            eid_g2r=eid_g2r,
+            eid_r2r=eid_r2r,
+            Mcr=Mcr,
+            Mmg=Mmg,
+            Mmr=Mmr,
+            gen_emb=gen_emb,
+            rea_emb=rea_emb,
+            ge_edim=ge_edim,
+            re_edim=re_edim,
+            use_disc=use_disc,
+            f_disc_orig=f_disc_orig,
+        )
+        self.gnn = build_flex_gnn(
+            nr=n_reactions,
+            re_edim=re_edim,
+            ge_edim=ge_edim,
+            nlayers=nlayers,
+            use_disc=use_disc,
+            f_disc_orig=f_disc_orig,
+            use_layer_weights=use_layer_weights,
+        )
         self.flx_project = flx_project
-        self.save_hyperparameters(ignore=["gnn", "Mcr", "Mmg", "Mmr", "cor_wts"])
+        self.save_hyperparameters(
+            ignore=[
+                "eid_g2r",
+                "eid_r2r",
+                "Mcr",
+                "Mmg",
+                "Mmr",
+                "cor_wts",
+                "gen_emb",
+                "rea_emb",
+                "NSP",
+                "f_disc_orig",
+            ]
+        )
 
         self.register_buffer(
             "loss_lms",
@@ -102,8 +149,8 @@ class FlexModule(L.LightningModule):
 
         if gen_emb is not None:
             assert (
-                gen_emb.shape[0] == Mmg.shape[1]
-            ), f"{gen_emb.shape[0]} != {Mmg.shape[1]}"
+                gen_emb.shape[0] == n_genes
+            ), f"{gen_emb.shape[0]} != {n_genes}"
             assert (
                 gen_emb.shape[1] == self.gnn.ge_edim
             ), f"{gen_emb.shape[1]} != {self.gnn.ge_edim}"
@@ -113,7 +160,7 @@ class FlexModule(L.LightningModule):
             if self.gnn.ge_edim > 1:
                 self.g_embed = torch.nn.Embedding(self.Mmg.shape[1], self.gnn.ge_edim)
         if rea_emb is not None:
-            assert rea_emb.shape[0] == Mmr.shape[1]
+            assert rea_emb.shape[0] == n_reactions
             assert (
                 rea_emb.shape[1] == self.gnn.re_edim
             ), f"{rea_emb.shape[1]} != {self.gnn.re_edim}"
@@ -121,6 +168,61 @@ class FlexModule(L.LightningModule):
         else:
             self.register_buffer("rea_emb_tt", None)
             self.r_embed = torch.nn.Embedding(1, self.gnn.re_edim)
+
+    @staticmethod
+    def _validate_graph_inputs(
+        eid_g2r: torch.Tensor,
+        eid_r2r: torch.Tensor,
+        Mcr: torch.Tensor,
+        Mmg: torch.Tensor,
+        Mmr: torch.Tensor,
+        gen_emb: torch.Tensor | None,
+        rea_emb: torch.Tensor | None,
+        ge_edim: int,
+        re_edim: int,
+        use_disc: bool,
+        f_disc_orig: torch.Tensor | None,
+    ) -> None:
+        """Validate graph tensors and edge attributes before building the GNN."""
+        n_genes = int(Mmg.shape[1])
+        n_reactions = int(Mmr.shape[1])
+
+        if Mcr.shape[1] != n_reactions:
+            raise ValueError(
+                f"Mcr has {Mcr.shape[1]} reactions but Mmr has {n_reactions}."
+            )
+        if eid_g2r.shape[0] != 2:
+            raise ValueError(f"eid_g2r must have shape (2, E), got {tuple(eid_g2r.shape)}.")
+        if eid_r2r.shape[0] != 2:
+            raise ValueError(f"eid_r2r must have shape (2, E), got {tuple(eid_r2r.shape)}.")
+        if eid_g2r.numel() > 0:
+            if int(eid_g2r[0].max().item()) >= n_genes:
+                raise ValueError("eid_g2r references gene indices outside Mmg.")
+            if int(eid_g2r[1].max().item()) >= n_reactions:
+                raise ValueError("eid_g2r references reaction indices outside Mmr.")
+        if eid_r2r.numel() > 0 and int(eid_r2r.max().item()) >= n_reactions:
+            raise ValueError("eid_r2r references reaction indices outside Mmr.")
+        if gen_emb is not None and gen_emb.shape != (n_genes, ge_edim):
+            raise ValueError(
+                "gen_emb must have shape "
+                f"({n_genes}, {ge_edim}), got {tuple(gen_emb.shape)}."
+            )
+        if rea_emb is not None and rea_emb.shape != (n_reactions, re_edim):
+            raise ValueError(
+                "rea_emb must have shape "
+                f"({n_reactions}, {re_edim}), got {tuple(rea_emb.shape)}."
+            )
+        if use_disc:
+            if f_disc_orig is None:
+                raise ValueError("f_disc_orig must be provided when use_disc=True.")
+            n_non_self = int((eid_r2r[0] != eid_r2r[1]).sum().item())
+            if f_disc_orig.ndim != 1:
+                raise ValueError("f_disc_orig must be a 1D tensor of R->R edge attributes.")
+            if f_disc_orig.shape[0] != n_non_self:
+                raise ValueError(
+                    "f_disc_orig must match the non-self-loop R->R edge count: "
+                    f"expected {n_non_self}, got {f_disc_orig.shape[0]}."
+                )
 
     @property
     def eid(self) -> dict[tuple[str, str, str], torch.Tensor]:

@@ -6,12 +6,6 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
 from flexModel import FlexModule
-from flexModel.flex_gnn import (
-    FlexGNN_Disc_GGConv,
-    FlexGNN_Disc_GGConv_LW,
-    FlexGNN_GCNConv_GGConv,
-    FlexGNN_GCNConv_GGConv_LW,
-)
 
 
 @dataclass(frozen=True)
@@ -120,31 +114,11 @@ def create_flex_module(
         reaction_edim=reaction_edim,
     )
 
+    f_disc_orig = None
     if use_disc:
-        f_disc_orig = torch.rand(problem.eid_r2r.shape[1])
-        gnn_cls = FlexGNN_Disc_GGConv_LW if use_layer_weights else FlexGNN_Disc_GGConv
-        gnn = gnn_cls(
-            nr=n_reactions,
-            f_disc_orig=f_disc_orig,
-            re_edim=reaction_edim,
-            ge_edim=gene_edim,
-            nlayers=2,
-        )
-    else:
-        gnn_cls = (
-            FlexGNN_GCNConv_GGConv_LW
-            if use_layer_weights
-            else FlexGNN_GCNConv_GGConv
-        )
-        gnn = gnn_cls(
-            nr=n_reactions,
-            re_edim=reaction_edim,
-            ge_edim=gene_edim,
-            nlayers=2,
-        )
+        f_disc_orig = torch.rand(int((problem.eid_r2r[0] != problem.eid_r2r[1]).sum().item()))
 
     model = module_cls(
-        gnn=gnn,
         eid_g2r=problem.eid_g2r,
         eid_r2r=problem.eid_r2r,
         Mcr=problem.Mcr,
@@ -153,6 +127,12 @@ def create_flex_module(
         cor_wts=problem.cor_wts,
         gen_emb=problem.gen_emb,
         rea_emb=problem.rea_emb,
+        re_edim=reaction_edim,
+        ge_edim=gene_edim,
+        nlayers=2,
+        use_disc=use_disc,
+        f_disc_orig=f_disc_orig,
+        use_layer_weights=use_layer_weights,
         flx_project=False,
         l_fb=1.0,
         l_pos=1.0,

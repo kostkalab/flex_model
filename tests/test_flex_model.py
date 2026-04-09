@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flexModel.flex_gnn import FlexGNN_Disc_GGConv, FlexGNN_GCNConv_GGConv
+from flexModel.flex_gnn import (
+    FlexGNN_Disc_GGConv,
+    FlexGNN_Disc_GGConv_LW,
+    FlexGNN_GCNConv_GGConv,
+    FlexGNN_GCNConv_GGConv_LW,
+)
 from flexModel.flex_module import FlexModule
 from tests.factories import create_random_problem
 
@@ -27,27 +32,12 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
         reaction_edim=reaction_edim,
     )
 
-    # Initialize GNN model
+    f_disc_orig = None
     if use_disc:
-        f_disc_orig = torch.rand(problem.eid_r2r.shape[1])
-        gnn = FlexGNN_Disc_GGConv(
-            nr=problem.n_reactions,
-            f_disc_orig=f_disc_orig,
-            re_edim=reaction_edim,
-            ge_edim=gene_edim,
-            nlayers=2,
-        )
-    else:
-        gnn = FlexGNN_GCNConv_GGConv(
-            nr=problem.n_reactions,
-            re_edim=reaction_edim,
-            ge_edim=gene_edim,
-            nlayers=2,
-        )
+        f_disc_orig = torch.rand(int((problem.eid_r2r[0] != problem.eid_r2r[1]).sum().item()))
 
     # Initialize FlexModule
     model = FlexModule(
-        gnn=gnn,
         eid_g2r=problem.eid_g2r,
         eid_r2r=problem.eid_r2r,
         Mcr=problem.Mcr,
@@ -56,6 +46,11 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
         cor_wts=problem.cor_wts,
         gen_emb=problem.gen_emb,
         rea_emb=problem.rea_emb,
+        re_edim=reaction_edim,
+        ge_edim=gene_edim,
+        nlayers=2,
+        use_disc=use_disc,
+        f_disc_orig=f_disc_orig,
         flx_project=False,  # Test without nullspace projection first
         l_fb=1.0,
         l_pos=1.0,
@@ -98,7 +93,6 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
 
     # Reinitialize model with projection
     model_proj = FlexModule(
-        gnn=gnn,
         eid_g2r=problem.eid_g2r,
         eid_r2r=problem.eid_r2r,
         Mcr=problem.Mcr,
@@ -107,6 +101,11 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
         cor_wts=problem.cor_wts,
         gen_emb=problem.gen_emb,
         rea_emb=problem.rea_emb,
+        re_edim=reaction_edim,
+        ge_edim=gene_edim,
+        nlayers=2,
+        use_disc=use_disc,
+        f_disc_orig=f_disc_orig,
         flx_project=True,
         l_fb=1.0,
         l_pos=1.0,
@@ -135,3 +134,22 @@ def test_flex_module_forward_pass(use_disc: bool) -> None:
 
     losses_proj = model_proj.losses(ge, flxs_proj, flxs_p_proj)
     assert losses_proj.shape == (batch_size, 5)
+
+
+@pytest.mark.parametrize(
+    ("wrapper_cls", "kwargs"),
+    [
+        (FlexGNN_GCNConv_GGConv, {}),
+        (FlexGNN_GCNConv_GGConv_LW, {}),
+        (FlexGNN_Disc_GGConv, {"f_disc_orig": torch.rand(3)}),
+        (FlexGNN_Disc_GGConv_LW, {"f_disc_orig": torch.rand(3)}),
+    ],
+)
+def test_legacy_gnn_wrappers_warn(
+    wrapper_cls: type[torch.nn.Module], kwargs: dict[str, torch.Tensor]
+) -> None:
+    """Legacy preset wrappers emit deprecation warnings but remain usable."""
+    with pytest.warns(DeprecationWarning, match="deprecated"):
+        model = wrapper_cls(nr=4, re_edim=2, ge_edim=2, nlayers=1, **kwargs)
+
+    assert isinstance(model, torch.nn.Module)

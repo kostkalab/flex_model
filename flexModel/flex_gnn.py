@@ -7,6 +7,7 @@ antisymmetric flux prediction for metabolic network modeling.
 from __future__ import annotations
 
 from collections.abc import Callable
+import warnings
 
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -63,6 +64,61 @@ def _disc_conv_builders(f_disc_orig: torch.Tensor) -> dict[EdgeType, ConvBuilder
             f_disc_orig=f_disc_orig,
         ),
     }
+
+
+def build_flex_gnn(
+    nr: int,
+    re_edim: int = 1,
+    ge_edim: int = 1,
+    nlayers: int = 1,
+    use_disc: bool = False,
+    f_disc_orig: torch.Tensor | None = None,
+    use_layer_weights: bool = False,
+    use_layer_norm: bool | None = None,
+    use_checkpoint: bool | None = None,
+) -> "FlexGNN":
+    """Build a FlexGNN with consistent architectural defaults.
+
+    Args:
+        nr: Number of reaction nodes.
+        re_edim: Reaction embedding dimension.
+        ge_edim: Gene embedding dimension.
+        nlayers: Number of hetero-conv layers.
+        use_disc: Whether to enable concordant/discordant R→R message blending.
+        f_disc_orig: Static R→R edge attribute required when ``use_disc=True``.
+        use_layer_weights: Whether to combine layer outputs via learned weights.
+        use_layer_norm: Optional override for layer norm usage. Defaults to the
+            layer-weighted preset.
+        use_checkpoint: Optional override for activation checkpointing. Defaults
+            to the non-layer-weighted preset.
+
+    Returns:
+        Configured FlexGNN instance.
+
+    Raises:
+        ValueError: If ``use_disc=True`` and ``f_disc_orig`` is missing.
+    """
+    if use_disc and f_disc_orig is None:
+        raise ValueError("f_disc_orig must be provided when use_disc=True.")
+
+    if use_layer_norm is None:
+        use_layer_norm = use_layer_weights
+    if use_checkpoint is None:
+        use_checkpoint = not use_layer_weights
+
+    conv_builders = (
+        _disc_conv_builders(f_disc_orig) if use_disc else _default_conv_builders()
+    )
+    return FlexGNN(
+        nr=nr,
+        re_edim=re_edim,
+        ge_edim=ge_edim,
+        nlayers=nlayers,
+        conv_builders=conv_builders,
+        use_layer_weights=use_layer_weights,
+        use_layer_norm=use_layer_norm,
+        use_checkpoint=use_checkpoint,
+    )
 
 
 class FlexGNN(torch.nn.Module):
@@ -271,19 +327,21 @@ class FlexGNN(torch.nn.Module):
 
 
 class FlexGNN_GCNConv_GGConv(torch.nn.Module):
-    """Flexible GNN with ReaReaConv (GCNConv-equivalent, no disc) + ResGatedConv."""
+    """Deprecated wrapper for a non-disc FlexGNN preset."""
 
     def __init__(self, nr: int, re_edim: int = 1, ge_edim: int = 1, nlayers: int = 1):
         super().__init__()
-        self.model = FlexGNN(
+        warnings.warn(
+            "FlexGNN_GCNConv_GGConv is deprecated; use build_flex_gnn(..., "
+            "use_disc=False, use_layer_weights=False) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.model = build_flex_gnn(
             nr=nr,
             re_edim=re_edim,
             ge_edim=ge_edim,
             nlayers=nlayers,
-            conv_builders=_default_conv_builders(),
-            use_layer_weights=False,
-            use_layer_norm=False,
-            use_checkpoint=True,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers
@@ -296,19 +354,22 @@ class FlexGNN_GCNConv_GGConv(torch.nn.Module):
 
 
 class FlexGNN_GCNConv_GGConv_LW(torch.nn.Module):
-    """Flexible GNN with learnable layer weighting (no disc)."""
+    """Deprecated wrapper for a layer-weighted non-disc FlexGNN preset."""
 
     def __init__(self, nr: int, re_edim: int = 1, ge_edim: int = 1, nlayers: int = 1):
         super().__init__()
-        self.model = FlexGNN(
+        warnings.warn(
+            "FlexGNN_GCNConv_GGConv_LW is deprecated; use build_flex_gnn(..., "
+            "use_disc=False, use_layer_weights=True) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.model = build_flex_gnn(
             nr=nr,
             re_edim=re_edim,
             ge_edim=ge_edim,
             nlayers=nlayers,
-            conv_builders=_default_conv_builders(),
             use_layer_weights=True,
-            use_layer_norm=True,
-            use_checkpoint=False,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers
@@ -322,7 +383,7 @@ class FlexGNN_GCNConv_GGConv_LW(torch.nn.Module):
 
 
 class FlexGNN_Disc_GGConv(torch.nn.Module):
-    """Flexible GNN with concordant/discordant ReaReaConv + ResGatedConv.
+    """Deprecated wrapper for a disc-enabled FlexGNN preset.
 
     f_disc co-evolves with representations layer by layer:
         layer 0: f_disc_orig (all-positive assumption)
@@ -339,15 +400,19 @@ class FlexGNN_Disc_GGConv(torch.nn.Module):
         nlayers: int = 1,
     ):
         super().__init__()
-        self.model = FlexGNN(
+        warnings.warn(
+            "FlexGNN_Disc_GGConv is deprecated; use build_flex_gnn(..., "
+            "use_disc=True, use_layer_weights=False, f_disc_orig=...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.model = build_flex_gnn(
             nr=nr,
             re_edim=re_edim,
             ge_edim=ge_edim,
             nlayers=nlayers,
-            conv_builders=_disc_conv_builders(f_disc_orig),
-            use_layer_weights=False,
-            use_layer_norm=False,
-            use_checkpoint=True,
+            use_disc=True,
+            f_disc_orig=f_disc_orig,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers
@@ -360,7 +425,7 @@ class FlexGNN_Disc_GGConv(torch.nn.Module):
 
 
 class FlexGNN_Disc_GGConv_LW(torch.nn.Module):
-    """Flexible GNN with concordant/discordant ReaReaConv + learnable layer weights.
+    """Deprecated wrapper for a disc-enabled layer-weighted FlexGNN preset.
 
     f_disc co-evolves with representations layer by layer.
     Single pass, fully differentiable.
@@ -375,15 +440,20 @@ class FlexGNN_Disc_GGConv_LW(torch.nn.Module):
         nlayers: int = 1,
     ):
         super().__init__()
-        self.model = FlexGNN(
+        warnings.warn(
+            "FlexGNN_Disc_GGConv_LW is deprecated; use build_flex_gnn(..., "
+            "use_disc=True, use_layer_weights=True, f_disc_orig=...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.model = build_flex_gnn(
             nr=nr,
             re_edim=re_edim,
             ge_edim=ge_edim,
             nlayers=nlayers,
-            conv_builders=_disc_conv_builders(f_disc_orig),
             use_layer_weights=True,
-            use_layer_norm=True,
-            use_checkpoint=False,
+            use_disc=True,
+            f_disc_orig=f_disc_orig,
         )
         self.nr = self.model.nr
         self.nlayers = self.model.nlayers

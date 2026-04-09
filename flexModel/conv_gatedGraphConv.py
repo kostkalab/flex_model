@@ -48,6 +48,7 @@ class ResGatedConv(MessagePassing):
         edge_dim: Optional edge feature dimension
         root_weight: Whether to use residual skip connection (default: True)
         bias: Whether to add bias terms (default: True)
+        aggr: Aggregation method for message passing (default: "add"; could use "mean")
         **kwargs: Additional arguments for MessagePassing
 
     Reference:
@@ -63,10 +64,11 @@ class ResGatedConv(MessagePassing):
         edge_dim: int | None = None,  # Optional edge feature dimension
         root_weight: bool = True,
         bias: bool = True,
+        aggr: str = "add",
         **kwargs,
     ):
 
-        kwargs.setdefault("aggr", "add")
+        kwargs["aggr"] = aggr
         super().__init__(**kwargs)
 
         assert out_channels % 2 == 0, "out_channels must be even"

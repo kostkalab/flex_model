@@ -461,7 +461,14 @@ class FlexModule(L.LightningModule):
 
         total = sum(norms) + 1e-12
         for i, name in enumerate(names):
-            self.log(f"{stage}_gfrac-{name}", norms[i] / total, prog_bar=True)
+            frac = (norms[i] / total).item()
+            self.log(
+                f"{stage}_gfrac-{name}",
+                frac,
+                prog_bar=True,
+                on_step=True,
+                on_epoch=False,
+            )
 
     def _shared_step(
         self,

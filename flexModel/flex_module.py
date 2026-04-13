@@ -34,6 +34,8 @@ class FlexModule(L.LightningModule):
         nlayers: Number of graph-conv layers.
         use_disc: Whether to enable concordant/discordant R→R message blending.
         f_disc_orig: Static R→R edge attribute required when ``use_disc=True``.
+        halfspace_init: If True (requires ``use_disc=True``), initialize R→R
+            convolutions with swap/neg-identity halfspace geometry.
         use_layer_weights: Whether to combine layer outputs with learned weights.
         flx_project: Whether to project fluxes into the stoichiometric nullspace.
         l_fb: Flux-balance loss weight.
@@ -65,6 +67,7 @@ class FlexModule(L.LightningModule):
         nlayers: int = 1,
         use_disc: bool = False,
         f_disc_orig: torch.Tensor | None = None,
+        halfspace_init: bool = False,
         use_layer_weights: bool = False,
         flx_project: bool = False,
         l_fb: float = 1,
@@ -104,6 +107,7 @@ class FlexModule(L.LightningModule):
             nlayers=nlayers,
             use_disc=use_disc,
             f_disc_orig=f_disc_orig,
+            halfspace_init=halfspace_init,
             use_layer_weights=use_layer_weights,
         )
         self.flx_project = flx_project
@@ -113,6 +117,7 @@ class FlexModule(L.LightningModule):
                 "ge_edim": resolved_ge_edim,
                 "nlayers": nlayers,
                 "use_disc": use_disc,
+                "halfspace_init": halfspace_init,
                 "use_layer_weights": use_layer_weights,
                 "flx_project": flx_project,
                 "l_fb": l_fb,

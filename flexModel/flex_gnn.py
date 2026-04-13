@@ -66,6 +66,22 @@ def _disc_conv_builders(f_disc_orig: torch.Tensor) -> dict[EdgeType, ConvBuilder
     }
 
 
+def _disc_halfspace_conv_builders(
+    f_disc_orig: torch.Tensor,
+) -> dict[EdgeType, ConvBuilder]:
+    """Conv builders using halfspace-initialized concordant/discordant R→R."""
+    return {
+        ("G", "to", "R"): lambda ge_edim, re_edim: ResGatedConv(
+            in_channels=(ge_edim, re_edim),
+            out_channels=re_edim,
+        ),
+        ("R", "to", "R"): lambda ge_edim, re_edim: ReaReaConv.from_halfspace_init(
+            dim=re_edim,
+            f_disc_orig=f_disc_orig,
+        ),
+    }
+
+
 def build_flex_gnn(
     nr: int,
     re_edim: int = 1,
@@ -73,6 +89,7 @@ def build_flex_gnn(
     nlayers: int = 1,
     use_disc: bool = False,
     f_disc_orig: torch.Tensor | None = None,
+    halfspace_init: bool = False,
     use_layer_weights: bool = False,
     use_layer_norm: bool | None = None,
     use_checkpoint: bool | None = None,
@@ -86,6 +103,8 @@ def build_flex_gnn(
         nlayers: Number of hetero-conv layers.
         use_disc: Whether to enable concordant/discordant R→R message blending.
         f_disc_orig: Static R→R edge attribute required when ``use_disc=True``.
+        halfspace_init: If True (requires ``use_disc=True``), initialize R→R
+            convolutions with swap/neg-identity halfspace geometry.
         use_layer_weights: Whether to combine layer outputs via learned weights.
         use_layer_norm: Optional override for layer norm usage. Defaults to the
             layer-weighted preset.
@@ -97,18 +116,24 @@ def build_flex_gnn(
 
     Raises:
         ValueError: If ``use_disc=True`` and ``f_disc_orig`` is missing.
+        ValueError: If ``halfspace_init=True`` and ``use_disc=False``.
     """
     if use_disc and f_disc_orig is None:
         raise ValueError("f_disc_orig must be provided when use_disc=True.")
+    if halfspace_init and not use_disc:
+        raise ValueError("halfspace_init=True requires use_disc=True.")
 
     if use_layer_norm is None:
         use_layer_norm = use_layer_weights
     if use_checkpoint is None:
         use_checkpoint = not use_layer_weights
 
-    conv_builders = (
-        _disc_conv_builders(f_disc_orig) if use_disc else _default_conv_builders()
-    )
+    if halfspace_init:
+        conv_builders = _disc_halfspace_conv_builders(f_disc_orig)
+    elif use_disc:
+        conv_builders = _disc_conv_builders(f_disc_orig)
+    else:
+        conv_builders = _default_conv_builders()
     return FlexGNN(
         nr=nr,
         re_edim=re_edim,

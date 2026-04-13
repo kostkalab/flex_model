@@ -46,8 +46,9 @@ class FlexModule(L.LightningModule):
         lopt_lr: Adam learning rate.
         NSP: Square root of the nullspace projector. Required when
             ``flx_project=True``.
-        log_grad_fracs: If True, log per-loss-term gradient norm fractions
-            during training.  Adds 5 extra backward passes per step.
+        log_grad_fracs: Log per-loss-term gradient norm fractions every N
+            training steps.  0 disables.  Adds 5 extra backward passes per
+            logged step.
     """
 
     # ------------------------------------------------------------------
@@ -79,7 +80,7 @@ class FlexModule(L.LightningModule):
         l_ent: float = 0,
         lopt_lr: float = 1e-3,
         NSP: torch.Tensor | None = None,
-        log_grad_fracs: bool = False,
+        log_grad_fracs: int = 0,
     ) -> None:
         super().__init__()
         n_genes = int(Mmg.shape[1])
@@ -460,7 +461,7 @@ class FlexModule(L.LightningModule):
 
         total = sum(norms) + 1e-12
         for i, name in enumerate(names):
-            self.log(f"{stage}_gfrac-{name}", norms[i] / total)
+            self.log(f"{stage}_gfrac-{name}", norms[i] / total, prog_bar=True)
 
     def _shared_step(
         self,
@@ -477,7 +478,7 @@ class FlexModule(L.LightningModule):
 
         self._log_stage_losses(stage, lses, loss)
 
-        if self.log_grad_fracs and stage == "trn":
+        if self.log_grad_fracs and stage == "trn" and self.global_step % self.log_grad_fracs == 0:
             self._log_grad_fracs(stage, lses)
 
         taus = self._compute_tau(x, flxs_p if flxs_p is not None else flxs)

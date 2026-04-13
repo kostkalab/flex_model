@@ -443,8 +443,8 @@ class FlexModule(L.LightningModule):
         self._log_stage_losses(stage, lses, loss)
 
         taus = self._compute_tau(x, flxs_p if flxs_p is not None else flxs)
-        self.log(f"{stage}_tau-cor", taus["tau_cor"], prog_bar=False)
-        self.log(f"{stage}_tau-sco", taus["tau_sco"], prog_bar=False)
+        self.log(f"{stage}_tau-cor", taus["tau_cor"], prog_bar=True)
+        self.log(f"{stage}_tau-sco", taus["tau_sco"], prog_bar=True)
         return loss
 
     def training_step(

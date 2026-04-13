@@ -46,6 +46,8 @@ class FlexModule(L.LightningModule):
         lopt_lr: Adam learning rate.
         NSP: Square root of the nullspace projector. Required when
             ``flx_project=True``.
+        log_grad_fracs: If True, log per-loss-term gradient norm fractions
+            during training.  Adds 5 extra backward passes per step.
     """
 
     # ------------------------------------------------------------------
@@ -77,6 +79,7 @@ class FlexModule(L.LightningModule):
         l_ent: float = 0,
         lopt_lr: float = 1e-3,
         NSP: torch.Tensor | None = None,
+        log_grad_fracs: bool = False,
     ) -> None:
         super().__init__()
         n_genes = int(Mmg.shape[1])
@@ -126,8 +129,10 @@ class FlexModule(L.LightningModule):
                 "l_sco": l_sco,
                 "l_ent": l_ent,
                 "lopt_lr": lopt_lr,
+                "log_grad_fracs": log_grad_fracs,
             }
         )
+        self.log_grad_fracs = log_grad_fracs
 
         self.register_buffer(
             "loss_lms",
@@ -432,6 +437,31 @@ class FlexModule(L.LightningModule):
             )
         self.log(f"{stage}_loss-all", loss.detach(), prog_bar=True)
 
+    def _log_grad_fracs(
+        self, stage: str, lses: torch.Tensor
+    ) -> None:
+        """Log per-loss-term gradient norm fractions.
+
+        Computes the L2 gradient norm of each weighted loss term w.r.t. all
+        parameters, then logs each as a fraction of the total.
+        """
+        names = ["fb", "pos", "cor", "sco", "ent"]
+        params = [p for p in self.parameters() if p.requires_grad]
+        norms = []
+        for i in range(5):
+            term = lses[i] * self.loss_lms[i]
+            grads = torch.autograd.grad(
+                term, params, retain_graph=True, allow_unused=True
+            )
+            norm_sq = sum(
+                g.detach().square().sum() for g in grads if g is not None
+            )
+            norms.append(norm_sq.sqrt())
+
+        total = sum(norms) + 1e-12
+        for i, name in enumerate(names):
+            self.log(f"{stage}_gfrac-{name}", norms[i] / total)
+
     def _shared_step(
         self,
         stage: str,
@@ -446,6 +476,9 @@ class FlexModule(L.LightningModule):
         loss = lses @ self.loss_lms
 
         self._log_stage_losses(stage, lses, loss)
+
+        if self.log_grad_fracs and stage == "trn":
+            self._log_grad_fracs(stage, lses)
 
         taus = self._compute_tau(x, flxs_p if flxs_p is not None else flxs)
         self.log(f"{stage}_tau-cor", taus["tau_cor"], prog_bar=True)

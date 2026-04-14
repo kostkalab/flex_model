@@ -109,7 +109,8 @@ def build_flex_gnn(
         use_layer_norm: Optional override for layer norm usage. Defaults to the
             layer-weighted preset.
         use_checkpoint: Optional override for activation checkpointing. Defaults
-            to the non-layer-weighted preset.
+            to True (per-layer checkpointing works with both layer-weighted and
+            non-layer-weighted modes).
 
     Returns:
         Configured FlexGNN instance.
@@ -126,7 +127,7 @@ def build_flex_gnn(
     if use_layer_norm is None:
         use_layer_norm = use_layer_weights
     if use_checkpoint is None:
-        use_checkpoint = not use_layer_weights
+        use_checkpoint = True  # per-layer checkpointing works in all modes
 
     conv_builders = _r2r_conv_builders(
         use_disc=use_disc,
@@ -157,6 +158,14 @@ class FlexGNN(torch.nn.Module):
     f_disc into all subsequent layers' R→R message passing. Single pass,
     fully differentiable, no probe iterations needed.
 
+    Checkpointing strategy:
+        Per-layer checkpointing is used regardless of whether layer weights
+        are enabled. Each conv + activation step is checkpointed individually.
+        With layer weights, only the running weighted sum and current layer
+        output are retained; previous layers' activations are freed and
+        recomputed during backward. This saves ~(L-1) intermediate tensors
+        compared to no checkpointing.
+
     Args:
         nr: Number of reaction nodes.
         re_edim: Reaction embedding dimension.
@@ -165,7 +174,7 @@ class FlexGNN(torch.nn.Module):
         conv_builders: Mapping from edge type to callable that builds a conv module.
         use_layer_weights: If True, combine each layer output via learned softmax weights.
         use_layer_norm: If True, apply layer norm after each reaction update.
-        use_checkpoint: If True, checkpoint the full forward logic to save memory.
+        use_checkpoint: If True, checkpoint each conv layer individually to save memory.
     """
 
     def __init__(
@@ -220,7 +229,6 @@ class FlexGNN(torch.nn.Module):
         self.las = self.flux_head.las
 
         # Detect whether any R→R conv needs flux-dependent edge attributes
-        # HeteroConv stores convs with "__" joined keys internally
         self.needs_fluxes = any(
             ("R", "to", "R") in conv.convs
             and isinstance(conv.convs[("R", "to", "R")], ReaReaConv)
@@ -229,7 +237,56 @@ class FlexGNN(torch.nn.Module):
         )
 
     # ------------------------------------------------------------------
-    # Internal: run conv layers with interleaved f_disc refinement
+    # Internal: single layer step (checkpoint target)
+    # ------------------------------------------------------------------
+
+    def _layer_step(
+        self,
+        conv: HeteroConv,
+        x_g: torch.Tensor,
+        x_r: torch.Tensor,
+        current_fluxes: torch.Tensor | None,
+        ei_dict: dict[EdgeType, torch.Tensor],
+        layer_norm: torch.nn.LayerNorm | None,
+    ) -> torch.Tensor:
+        """Run one conv layer: conv + activation + optional layer norm.
+
+        Separated out so it can be individually checkpointed.
+        """
+        if current_fluxes is not None:
+            out = conv(
+                {"G": x_g, "R": x_r},
+                ei_dict,
+                current_fluxes_dict={("R", "to", "R"): current_fluxes},
+            )
+        else:
+            out = conv({"G": x_g, "R": x_r}, ei_dict)
+
+        x_r_new = self.act(out["R"])
+        if layer_norm is not None:
+            x_r_new = layer_norm(x_r_new)
+        return x_r_new
+
+    def _layer_step_ckpt(
+        self,
+        conv: HeteroConv,
+        x_g: torch.Tensor,
+        x_r: torch.Tensor,
+        current_fluxes: torch.Tensor | None,
+        layer_norm: torch.nn.LayerNorm | None,
+        *ei_values,
+    ) -> torch.Tensor:
+        """Checkpoint-compatible wrapper for _layer_step.
+
+        Flattens ei_dict to tensor args for torch.utils.checkpoint.
+        current_fluxes may be None — checkpoint handles this with
+        use_reentrant=False.
+        """
+        ei_dict = dict(zip(self._ei_keys, ei_values))
+        return self._layer_step(conv, x_g, x_r, current_fluxes, ei_dict, layer_norm)
+
+    # ------------------------------------------------------------------
+    # Internal: run all layers
     # ------------------------------------------------------------------
 
     def _run_layers(
@@ -240,18 +297,12 @@ class FlexGNN(torch.nn.Module):
     ) -> torch.Tensor:
         """Run all conv layers, refining f_disc at each layer from intermediate fluxes.
 
-        Takes tensors directly (not dicts) to avoid in-place mutation issues
-        with checkpointing. x_g is passed to HeteroConv each layer but never
-        modified — gene embeddings stay grounded.
-
-        When needs_fluxes=True, the flow per layer is:
-            1. Compute current_fluxes from current reaction reprs via flux_head
-               (layer 0: uses all-positive → f_disc = f_disc_orig)
-            2. G→R conv + R→R conv (R→R uses current_fluxes internally)
-            3. Activation + optional layer norm
-        f_disc co-evolves with representations — no separate probe pass needed.
-
-        When needs_fluxes=False, just runs conv + activation at each layer.
+        Each layer is individually checkpointed when use_checkpoint=True. This
+        works with both layer-weighted and non-layer-weighted modes:
+            - Without layer weights: only curr_x_r is retained between layers.
+            - With layer weights: curr_x_r + the running weighted sum are
+              retained. Previous layers' activations are freed and recomputed
+              during backward.
 
         Args:
             x_r: Reaction features, shape (batch, nr, re_edim).
@@ -262,6 +313,8 @@ class FlexGNN(torch.nn.Module):
             Reaction representations, shape (batch, nr, re_edim).
         """
         curr_x_r = x_r
+        use_ckpt = self.training and self.use_checkpoint
+        ei_values = [ei_dict[k] for k in self._ei_keys] if use_ckpt else None
 
         if self.use_layer_weights:
             lwts = torch.nn.functional.softmax(self.layer_weights, dim=0)
@@ -270,9 +323,8 @@ class FlexGNN(torch.nn.Module):
             reaction_reprs = None
 
         for idx, conv in enumerate(self.convs):
+            # Compute fluxes for f_disc (disc mode only)
             if self.needs_fluxes:
-                # Layer 0: no flux estimates yet → all-positive → f_disc = f_disc_orig
-                # Layer 1+: use flux_head on current representations
                 if idx == 0:
                     current_fluxes = torch.ones(
                         curr_x_r.shape[0],
@@ -280,47 +332,41 @@ class FlexGNN(torch.nn.Module):
                         device=curr_x_r.device,
                     )
                 else:
-                    current_fluxes = self.flux_head(curr_x_r)  # (batch, nr)
+                    current_fluxes = self.flux_head(curr_x_r)
                     scle = math.sqrt(self.nr)
                     current_fluxes = (
                         current_fluxes
                         / (current_fluxes.abs().sum(dim=-1, keepdim=True) + 1e-7)
                         * scle
                     )
+            else:
+                current_fluxes = None
 
-                out = conv(
-                    {"G": x_g, "R": curr_x_r},
-                    ei_dict,
-                    current_fluxes_dict={("R", "to", "R"): current_fluxes},
+            ln = self.layer_norms[idx] if self.use_layer_norm else None
+
+            # Per-layer checkpoint: each conv+act is checkpointed individually.
+            # The weighted sum accumulation stays outside the checkpoint.
+            if use_ckpt:
+                curr_x_r = checkpoint(
+                    self._layer_step_ckpt,
+                    conv,
+                    x_g,
+                    curr_x_r,
+                    current_fluxes,
+                    ln,
+                    *ei_values,
+                    use_reentrant=False,
                 )
             else:
-                out = conv({"G": x_g, "R": curr_x_r}, ei_dict)
-
-            curr_x_r = self.act(out["R"])
-            if self.use_layer_norm:
-                curr_x_r = self.layer_norms[idx](curr_x_r)
+                curr_x_r = self._layer_step(
+                    conv, x_g, curr_x_r, current_fluxes, ei_dict, ln,
+                )
 
             if self.use_layer_weights:
                 reaction_reprs = reaction_reprs + lwts[idx + 1] * curr_x_r
 
         return reaction_reprs if self.use_layer_weights else curr_x_r
 
-    # ------------------------------------------------------------------
-    # Internal: full logic in one differentiable block (checkpoint-friendly)
-    # ------------------------------------------------------------------
-
-    def _run_layers_ckpt(
-        self, x_r: torch.Tensor, x_g: torch.Tensor, *ei_values
-    ) -> torch.Tensor:
-        """Checkpoint-compatible wrapper for _run_layers.
-
-        Accepts flattened ei_values (tensors only) since checkpoint requires
-        tensor args. Reconstructs ei_dict internally.
-        """
-        ei_dict = dict(zip(self._ei_keys, ei_values))
-        return self._run_layers(x_r, x_g, ei_dict)
-
-    # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
 
@@ -335,20 +381,7 @@ class FlexGNN(torch.nn.Module):
         x_r = x_dict["R"]
         x_g = x_dict["G"]  # not detached: upstream controls gradient flow
 
-        if self.training and self.use_checkpoint:
-            # Checkpoint only _run_layers (the heavy part).
-            # flux_head is cheap and stays outside — no recomputation needed.
-            ei_values = [ei_dict[k] for k in self._ei_keys]
-            final_reprs = checkpoint(
-                self._run_layers_ckpt,
-                x_r,
-                x_g,
-                *ei_values,
-                use_reentrant=False,
-            )
-        else:
-            final_reprs = self._run_layers(x_r, x_g, ei_dict)
-
+        final_reprs = self._run_layers(x_r, x_g, ei_dict)
         return self.flux_head(final_reprs)
 
 
@@ -414,13 +447,7 @@ class FlexGNN_GCNConv_GGConv_LW(torch.nn.Module):
 
 
 class FlexGNN_Disc_GGConv(torch.nn.Module):
-    """Deprecated wrapper for a disc-enabled FlexGNN preset.
-
-    f_disc co-evolves with representations layer by layer:
-        layer 0: f_disc_orig (all-positive assumption)
-        layer k: flux_head(reprs) -> updated f_disc -> R-R conv
-    Single pass, fully differentiable.
-    """
+    """Deprecated wrapper for a disc-enabled FlexGNN preset."""
 
     def __init__(
         self,

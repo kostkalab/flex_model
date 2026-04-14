@@ -71,6 +71,7 @@ class FlexModule(L.LightningModule):
         use_disc: bool = False,
         f_disc_orig: torch.Tensor | None = None,
         halfspace_init: bool = False,
+        use_rea_rea_gate: bool = False,
         use_layer_weights: bool = False,
         flx_project: bool = False,
         l_fb: float = 1,
@@ -112,6 +113,7 @@ class FlexModule(L.LightningModule):
             use_disc=use_disc,
             f_disc_orig=f_disc_orig,
             halfspace_init=halfspace_init,
+            use_rea_rea_gate=use_rea_rea_gate,
             use_layer_weights=use_layer_weights,
         )
         self.flx_project = flx_project
@@ -122,6 +124,7 @@ class FlexModule(L.LightningModule):
                 "nlayers": nlayers,
                 "use_disc": use_disc,
                 "halfspace_init": halfspace_init,
+                "use_rea_rea_gate": use_rea_rea_gate,
                 "use_layer_weights": use_layer_weights,
                 "flx_project": flx_project,
                 "l_fb": l_fb,

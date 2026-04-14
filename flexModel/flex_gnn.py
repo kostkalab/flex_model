@@ -35,51 +35,48 @@ class FluxHead(torch.nn.Module):
         return self.las(tmp1, tmp2).squeeze(-1)
 
 
-def _default_conv_builders() -> dict[EdgeType, ConvBuilder]:
-    """Default conv builders matching previous FlexGNN behavior."""
-    return {
-        ("G", "to", "R"): lambda ge_edim, re_edim: ResGatedConv(
-            in_channels=(ge_edim, re_edim),
-            out_channels=re_edim,
-        ),
-        ("R", "to", "R"): lambda ge_edim, re_edim: ReaReaConv(
-            in_channels=re_edim,
-            out_channels=re_edim,
-            use_disc=False,
-        ),
+def _g2r_builder() -> ConvBuilder:
+    """Standard G→R conv builder (ResGatedConv)."""
+    return lambda ge_edim, re_edim: ResGatedConv(
+        in_channels=(ge_edim, re_edim),
+        out_channels=re_edim,
+    )
+
+
+def _r2r_conv_builders(
+    use_disc: bool = False,
+    f_disc_orig: torch.Tensor | None = None,
+    halfspace_init: bool = False,
+    use_gate: bool = False,
+) -> dict[EdgeType, ConvBuilder]:
+    """Build conv builder dict with the requested R→R configuration."""
+    builders: dict[EdgeType, ConvBuilder] = {
+        ("G", "to", "R"): _g2r_builder(),
     }
-
-
-def _disc_conv_builders(f_disc_orig: torch.Tensor) -> dict[EdgeType, ConvBuilder]:
-    """Conv builders with concordant/discordant blending on R→R edges."""
-    return {
-        ("G", "to", "R"): lambda ge_edim, re_edim: ResGatedConv(
-            in_channels=(ge_edim, re_edim),
-            out_channels=re_edim,
-        ),
-        ("R", "to", "R"): lambda ge_edim, re_edim: ReaReaConv(
+    if halfspace_init:
+        builders[("R", "to", "R")] = lambda ge_edim, re_edim: (
+            ReaReaConv.from_halfspace_init(
+                dim=re_edim,
+                f_disc_orig=f_disc_orig,
+                use_gate=use_gate,
+            )
+        )
+    elif use_disc:
+        builders[("R", "to", "R")] = lambda ge_edim, re_edim: ReaReaConv(
             in_channels=re_edim,
             out_channels=re_edim,
             use_disc=True,
+            use_gate=use_gate,
             f_disc_orig=f_disc_orig,
-        ),
-    }
-
-
-def _disc_halfspace_conv_builders(
-    f_disc_orig: torch.Tensor,
-) -> dict[EdgeType, ConvBuilder]:
-    """Conv builders using halfspace-initialized concordant/discordant R→R."""
-    return {
-        ("G", "to", "R"): lambda ge_edim, re_edim: ResGatedConv(
-            in_channels=(ge_edim, re_edim),
+        )
+    else:
+        builders[("R", "to", "R")] = lambda ge_edim, re_edim: ReaReaConv(
+            in_channels=re_edim,
             out_channels=re_edim,
-        ),
-        ("R", "to", "R"): lambda ge_edim, re_edim: ReaReaConv.from_halfspace_init(
-            dim=re_edim,
-            f_disc_orig=f_disc_orig,
-        ),
-    }
+            use_disc=False,
+            use_gate=use_gate,
+        )
+    return builders
 
 
 def build_flex_gnn(
@@ -90,6 +87,7 @@ def build_flex_gnn(
     use_disc: bool = False,
     f_disc_orig: torch.Tensor | None = None,
     halfspace_init: bool = False,
+    use_rea_rea_gate: bool = False,
     use_layer_weights: bool = False,
     use_layer_norm: bool | None = None,
     use_checkpoint: bool | None = None,
@@ -105,6 +103,7 @@ def build_flex_gnn(
         f_disc_orig: Static R→R edge attribute required when ``use_disc=True``.
         halfspace_init: If True (requires ``use_disc=True``), initialize R→R
             convolutions with swap/neg-identity halfspace geometry.
+        use_rea_rea_gate: If True, enable per-edge gating on R→R convolutions.
         use_layer_weights: Whether to combine layer outputs via learned weights.
         use_layer_norm: Optional override for layer norm usage. Defaults to the
             layer-weighted preset.
@@ -128,12 +127,12 @@ def build_flex_gnn(
     if use_checkpoint is None:
         use_checkpoint = not use_layer_weights
 
-    if halfspace_init:
-        conv_builders = _disc_halfspace_conv_builders(f_disc_orig)
-    elif use_disc:
-        conv_builders = _disc_conv_builders(f_disc_orig)
-    else:
-        conv_builders = _default_conv_builders()
+    conv_builders = _r2r_conv_builders(
+        use_disc=use_disc,
+        f_disc_orig=f_disc_orig,
+        halfspace_init=halfspace_init,
+        use_gate=use_rea_rea_gate,
+    )
     return FlexGNN(
         nr=nr,
         re_edim=re_edim,
@@ -188,7 +187,7 @@ class FlexGNN(torch.nn.Module):
         self.use_layer_norm = use_layer_norm
         self.use_checkpoint = use_checkpoint
 
-        conv_builders = conv_builders or _default_conv_builders()
+        conv_builders = conv_builders or _r2r_conv_builders()
 
         self.act = torch.nn.GELU()
         self.convs = torch.nn.ModuleList()

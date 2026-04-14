@@ -6,6 +6,7 @@ antisymmetric flux prediction for metabolic network modeling.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 import warnings
 
@@ -279,7 +280,13 @@ class FlexGNN(torch.nn.Module):
                         device=curr_x_r.device,
                     )
                 else:
-                    current_fluxes = self.flux_head(curr_x_r)
+                    current_fluxes = self.flux_head(curr_x_r)  # (batch, nr)
+                    scle = math.sqrt(self.nr)
+                    current_fluxes = (
+                        current_fluxes
+                        / (current_fluxes.abs().sum(dim=-1, keepdim=True) + 1e-7)
+                        * scle
+                    )
 
                 out = conv(
                     {"G": x_g, "R": curr_x_r},

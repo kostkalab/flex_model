@@ -318,7 +318,7 @@ class FlexModule(L.LightningModule):
                 torch.zeros(self.gnn.nr, dtype=torch.int64, device=self.device)
             )  # (n_reactions, re_edim)
             rea_emb = rea_emb.expand(ge.shape[0], self.gnn.nr, self.gnn.re_edim)  # (batch, n_reactions, re_edim)
-            rea_emb = torch.nn.functional.softmax(rea_emb, dim=2)  # (batch, n_reactions, re_edim)
+            #rea_emb = torch.nn.functional.softmax(rea_emb, dim=2)  # (batch, n_reactions, re_edim)
 
         if self.gen_emb_tt is not None:
             gen_emb = self.gen_emb_tt.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)  # (batch, n_genes, ge_edim)
@@ -328,7 +328,7 @@ class FlexModule(L.LightningModule):
         else:
             gen_emb = self.g_embed(torch.arange(ge.shape[1], device=self.device))  # (n_genes, ge_edim)
             gen_emb = gen_emb.expand(ge.shape[0], ge.shape[1], self.gnn.ge_edim)  # (batch, n_genes, ge_edim)
-            gen_emb = torch.nn.functional.softmax(gen_emb, dim=2)  # (batch, n_genes, ge_edim)
+            #gen_emb = torch.nn.functional.softmax(gen_emb, dim=2)  # (batch, n_genes, ge_edim)
             gen_emb = gen_emb * ge.unsqueeze(2)  # (batch, n_genes, ge_edim)
 
         return {"G": gen_emb, "R": rea_emb}

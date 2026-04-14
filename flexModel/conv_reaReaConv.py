@@ -136,35 +136,58 @@ def _compute_gcn_norm(
 
 
 class ReaReaConv(torch.nn.Module):
-    """Reaction-reaction convolution with optional concordant/discordant message blending.
+    """Reaction-reaction convolution with optional concordant/discordant blending and gating.
 
-    Without concordant/discordant blending (use_disc=False):
-        Adds self-loops, computes symmetric normalization, applies linear
-        transform, adds bias. Equivalent to GCNConv.
-        forward(x, edge_index) -> updated x
+    Three operating modes, combinable:
 
-    With concordant/discordant blending (use_disc=True):
-        message_j->i = norm_ji * [(1 - f_disc_ji) * A_conc @ x_j + f_disc_ji * A_disc @ x_j]
-        f_disc is computed internally from current_fluxes.
-        forward(x, edge_index, current_fluxes=fluxes) -> updated x
+    1. Base mode (use_disc=False, use_gate=False):
+        Single weight matrix A. Message from j to i:
+            m_{j->i} = norm_ji * A @ x_j
+        Equivalent to GCNConv with symmetric normalization and self-loops.
 
-    Both modes are HeteroConv compatible. For use_disc=True, pass fluxes via:
+    2. Concordant/discordant mode (use_disc=True):
+        Separate A_conc and A_disc matrices, blended by f_disc:
+            m_raw_{j->i} = (1 - f_disc_ji) * A_conc @ x_j
+                         + f_disc_ji * A_disc @ x_j
+            m_{j->i} = norm_ji * m_raw_{j->i}
+        f_disc is computed internally from current_fluxes via tanh
+        interpolation (see compute_dynamic_f_disc). Requires current_fluxes
+        in forward().
+
+    3. Gated mode (use_gate=True, combinable with use_disc):
+        A pair-dependent gate modulates messages per-dimension:
+            gate_ji = sigmoid(W_q @ x_i + W_k @ m_raw_ji)
+            m_{j->i} = norm_ji * gate_ji * m_raw_ji
+        The gate sees the target's raw features x_i ("what do I need?")
+        and the proposed message m_raw ("what are you sending, given edge
+        type?"). Edge type conditioning is implicit: concordant messages
+        (A_conc @ x_j ~ swap(x_j) at init) and discordant messages
+        (A_disc @ x_j ~ -x_j at init) have different structure, so the
+        gate naturally learns to distinguish them.
+
+    HeteroConv compatible. For use_disc=True, pass fluxes via:
         hetero_conv(x_dict, ei_dict,
                     current_fluxes_dict={("R", "to", "R"): current_fluxes})
 
     Args:
-        in_channels: Input feature dimension.
-        out_channels: Output feature dimension.
-        use_disc: If True, create separate A_conc and A_disc matrices.
+        in_channels: Input feature dimension (d).
+        out_channels: Output feature dimension. A_conc, A_disc, W_q, W_k
+            all map to this space.
+        use_disc: If True, create A_conc and A_disc instead of a single A.
             current_fluxes must then be passed in forward().
-            If False, single A matrix, current_fluxes is ignored.
-        f_disc_orig: Static discordant strength per edge, shape (n_edges,),
-            computed from the metabolic graph under the all-positive-flux
-            assumption. Required when use_disc=True. Stored as a buffer.
-        temperature: Controls sharpness of the concordant/discordant transition
-            in the tanh. Only used when use_disc=True.
-        add_self_loops: If True, add self-loops before normalization (GCNConv default).
-        bias: If True, add learnable bias.
+        use_gate: If True, add pair-dependent gating:
+            gate = sigmoid(W_q @ x_i + W_k @ m_raw). The gate sees the
+            target's raw features and the proposed message (which already
+            encodes source features, edge type, and coupling physics).
+            Compatible with both disc and non-disc modes.
+        f_disc_orig: Static f_disc per edge, shape (n_edges,), computed from
+            the metabolic graph under the all-positive-flux assumption.
+            Required when use_disc=True. Stored as a non-learnable buffer.
+        temperature: Sharpness of the f_disc update from flux signs (tanh).
+            Only used when use_disc=True.
+        add_self_loops: If True, add self-loops before normalization
+            (GCNConv default). Self-loops use f_disc=0 (concordant).
+        bias: If True, add learnable output bias b.
     """
 
     def __init__(
@@ -172,6 +195,7 @@ class ReaReaConv(torch.nn.Module):
         in_channels: int,
         out_channels: int,
         use_disc: bool = False,
+        use_gate: bool = False,
         f_disc_orig: Tensor | None = None,
         temperature: float = 1.0,
         add_self_loops: bool = True,
@@ -181,6 +205,7 @@ class ReaReaConv(torch.nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.use_disc = use_disc
+        self.use_gate = use_gate
         self.temperature = temperature
         self.add_self_loops = add_self_loops
 
@@ -196,6 +221,10 @@ class ReaReaConv(torch.nn.Module):
         else:
             self.register_buffer("f_disc_orig", None)
             self.lin = Linear(in_channels, out_channels, bias=False)
+
+        if use_gate:
+            self.gate_query = Linear(in_channels, out_channels, bias=False)
+            self.gate_key = Linear(out_channels, out_channels, bias=False)
 
         if bias:
             self.bias = Parameter(torch.empty(out_channels))
@@ -217,6 +246,9 @@ class ReaReaConv(torch.nn.Module):
             self.lin_disc.reset_parameters()
         else:
             self.lin.reset_parameters()
+        if self.use_gate:
+            self.gate_query.reset_parameters()
+            self.gate_key.reset_parameters()
         if self.bias is not None:
             zeros(self.bias)
 
@@ -328,6 +360,12 @@ class ReaReaConv(torch.nn.Module):
             x_lin = self.lin(x)
             out_ch = x_lin.shape[-1]
             messages = x_lin[:, src, :]  # (batch, n_edges, out_ch)
+
+        if self.use_gate:
+            q_i = self.gate_query(x)[:, tgt, :]  # (batch, n_edges, out_ch)
+            k_m = self.gate_key(messages)  # (batch, n_edges, out_ch)
+            gate = torch.sigmoid(q_i + k_m)  # (batch, n_edges, out_ch)
+            messages = gate * messages
 
         # Apply symmetric normalization
         messages = messages * norm[None, :, None]  # (1, n_edges, 1) broadcast

@@ -10,9 +10,10 @@ import time
 from collections.abc import Callable
 
 import torch
+import pytest
 from torch_geometric.nn import GCNConv
 
-from flexModel.conv_reaReaConv import ReaReaConv
+from flexModel.conv_reaReaConv import ReaReaConv, compute_dynamic_f_disc
 
 
 def _make_random_graph(num_nodes: int, num_edges: int, seed: int = 0) -> torch.Tensor:
@@ -141,3 +142,76 @@ def test_reareaconv_matches_gcnconv_and_reports_timing() -> None:
         _bench_on_device(torch.device("cuda:1"))
     elif torch.cuda.is_available():
         _bench_on_device(torch.device("cuda"))
+
+
+@pytest.mark.parametrize("use_disc", [False, True])
+def test_reareaconv_gate_key_node_level_matches_edge_level(use_disc: bool) -> None:
+    """Node-level gate_key optimization should match explicit edge-level gating."""
+    torch.manual_seed(13)
+
+    batch = 3
+    num_nodes = 8
+    num_edges = 16
+    in_channels = 6
+    out_channels = 5
+
+    edge_index = _make_random_graph(num_nodes, num_edges, seed=13)
+    x = torch.randn(batch, num_nodes, in_channels)
+
+    f_disc_orig = None
+    current_fluxes = None
+    if use_disc:
+        f_disc_orig = torch.rand(edge_index.shape[1])
+        current_fluxes = torch.randn(batch, num_nodes)
+
+    conv = ReaReaConv(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        use_disc=use_disc,
+        use_gate=True,
+        f_disc_orig=f_disc_orig,
+        add_self_loops=True,
+        bias=True,
+    )
+    conv.eval()
+
+    with torch.no_grad():
+        actual = conv(x, edge_index, current_fluxes=current_fluxes)
+
+        edge_index_norm, norm, n_orig = conv._get_norm(edge_index, num_nodes)
+        src, tgt = edge_index_norm[0], edge_index_norm[1]
+        n_edges = edge_index_norm.shape[1]
+
+        if use_disc:
+            assert current_fluxes is not None
+            edge_index_orig = edge_index_norm[:, :n_orig]
+            temperature = conv._effective_temperature(current_fluxes.shape[1])
+            f_disc = compute_dynamic_f_disc(
+                conv.f_disc_orig, current_fluxes, edge_index_orig, temperature
+            )
+            n_self_loops = n_edges - n_orig
+            self_loop_zeros = torch.zeros(
+                batch, n_self_loops, device=f_disc.device, dtype=f_disc.dtype
+            )
+            f_disc_full = torch.cat([f_disc, self_loop_zeros], dim=1)
+
+            x_conc = conv.lin_conc(x)
+            x_disc = conv.lin_disc(x)
+            messages = (1.0 - f_disc_full.unsqueeze(-1)) * x_conc[:, src, :] + f_disc_full.unsqueeze(-1) * x_disc[:, src, :]
+        else:
+            x_lin = conv.lin(x)
+            messages = x_lin[:, src, :]
+
+        q_i = conv.gate_query(x)[:, tgt, :]
+        k_m = conv.gate_key(messages)
+        gate = torch.sigmoid(q_i + k_m)
+        messages = gate * messages
+        messages = messages * norm[None, :, None]
+
+        tgt_idx = tgt[None, :, None].expand(batch, n_edges, out_channels)
+        expected = torch.zeros(batch, num_nodes, out_channels, device=x.device, dtype=x.dtype)
+        expected.scatter_add_(1, tgt_idx, messages)
+        if conv.bias is not None:
+            expected = expected + conv.bias
+
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)

@@ -365,14 +365,21 @@ class ReaReaConv(torch.nn.Module):
 
             fd = f_disc_full.unsqueeze(-1)  # (batch, n_edges, 1)
             messages = (1.0 - fd) * x_conc_j + fd * x_disc_j
+
+            if self.use_gate:
+                k_conc_j = self.gate_key(x_conc)[:, src, :]  # (batch, n_edges, out_ch)
+                k_disc_j = self.gate_key(x_disc)[:, src, :]  # (batch, n_edges, out_ch)
+                k_m = (1.0 - fd) * k_conc_j + fd * k_disc_j
         else:
             x_lin = self.lin(x)
             out_ch = x_lin.shape[-1]
             messages = x_lin[:, src, :]  # (batch, n_edges, out_ch)
 
+            if self.use_gate:
+                k_m = self.gate_key(x_lin)[:, src, :]  # (batch, n_edges, out_ch)
+
         if self.use_gate:
             q_i = self.gate_query(x)[:, tgt, :]  # (batch, n_edges, out_ch)
-            k_m = self.gate_key(messages)  # (batch, n_edges, out_ch)
             gate = torch.sigmoid(q_i + k_m)  # (batch, n_edges, out_ch)
             messages = gate * messages
 

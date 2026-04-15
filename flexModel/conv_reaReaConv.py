@@ -183,8 +183,12 @@ class ReaReaConv(torch.nn.Module):
         f_disc_orig: Static f_disc per edge, shape (n_edges,), computed from
             the metabolic graph under the all-positive-flux assumption.
             Required when use_disc=True. Stored as a non-learnable buffer.
-        temperature: Sharpness of the f_disc update from flux signs (tanh).
-            Only used when use_disc=True.
+        temperature: Multiplicative scale for the sign temperature.
+            The effective temperature used in ``compute_dynamic_f_disc`` is
+            ``max(temperature / n_reactions, 1e-7)``. ``temperature=1`` is the
+            natural scale implied by flux normalization, larger values are
+            softer, and smaller values are sharper. Only used when
+            ``use_disc=True``.
         add_self_loops: If True, add self-loops before normalization
             (GCNConv default). Self-loops use f_disc=0 (concordant).
         bias: If True, add learnable output bias b.
@@ -197,7 +201,7 @@ class ReaReaConv(torch.nn.Module):
         use_disc: bool = False,
         use_gate: bool = False,
         f_disc_orig: Tensor | None = None,
-        temperature: float = 1.0,
+        temperature: float = 2.0,
         add_self_loops: bool = True,
         bias: bool = True,
     ) -> None:
@@ -206,7 +210,7 @@ class ReaReaConv(torch.nn.Module):
         self.out_channels = out_channels
         self.use_disc = use_disc
         self.use_gate = use_gate
-        self.temperature = temperature
+        self.temperature_scale = temperature
         self.add_self_loops = add_self_loops
 
         if use_disc:
@@ -239,6 +243,10 @@ class ReaReaConv(torch.nn.Module):
         self._cached_n_orig: int | None = None
 
         self.reset_parameters()
+
+    def _effective_temperature(self, n_reactions: int) -> float:
+        """Return the flux-sign temperature scaled to the reaction count."""
+        return max(self.temperature_scale / n_reactions, 1e-7)
 
     def reset_parameters(self) -> None:
         if self.use_disc:
@@ -333,8 +341,9 @@ class ReaReaConv(torch.nn.Module):
             # Compute per-cell f_disc from fluxes on non-self-loop edges only
             # (self-loops were stripped; n_orig is the count of real edges)
             edge_index_orig = edge_index_norm[:, :n_orig]
+            temperature = self._effective_temperature(current_fluxes.shape[1])
             f_disc = compute_dynamic_f_disc(
-                self.f_disc_orig, current_fluxes, edge_index_orig, self.temperature
+                self.f_disc_orig, current_fluxes, edge_index_orig, temperature
             )  # (batch, n_orig)
 
             # Self-loops are concordant by definition (same reaction, same sign)

@@ -215,3 +215,99 @@ def test_reareaconv_gate_key_node_level_matches_edge_level(use_disc: bool) -> No
             expected = expected + conv.bias
 
     torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("use_disc", [False, True])
+@pytest.mark.parametrize("gate_impl", ["edge", "node"])
+def test_reareaconv_gate_impl_matches_explicit_edge_level(
+    use_disc: bool, gate_impl: str
+) -> None:
+    """Both explicit gate implementations should match the reference edge-level path."""
+    torch.manual_seed(17)
+
+    batch = 2
+    num_nodes = 7
+    num_edges = 15
+    in_channels = 5
+    out_channels = 4
+
+    edge_index = _make_random_graph(num_nodes, num_edges, seed=17)
+    x = torch.randn(batch, num_nodes, in_channels)
+
+    f_disc_orig = None
+    current_fluxes = None
+    if use_disc:
+        f_disc_orig = torch.rand(edge_index.shape[1])
+        current_fluxes = torch.randn(batch, num_nodes)
+
+    conv = ReaReaConv(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        use_disc=use_disc,
+        use_gate=True,
+        gate_impl=gate_impl,
+        f_disc_orig=f_disc_orig,
+        add_self_loops=True,
+        bias=True,
+    )
+    conv.eval()
+
+    with torch.no_grad():
+        actual = conv(x, edge_index, current_fluxes=current_fluxes)
+
+        edge_index_norm, norm, n_orig = conv._get_norm(edge_index, num_nodes)
+        src, tgt = edge_index_norm[0], edge_index_norm[1]
+        n_edges = edge_index_norm.shape[1]
+
+        if use_disc:
+            assert current_fluxes is not None
+            edge_index_orig = edge_index_norm[:, :n_orig]
+            temperature = conv._effective_temperature(current_fluxes.shape[1])
+            f_disc = compute_dynamic_f_disc(
+                conv.f_disc_orig, current_fluxes, edge_index_orig, temperature
+            )
+            n_self_loops = n_edges - n_orig
+            self_loop_zeros = torch.zeros(
+                batch, n_self_loops, device=f_disc.device, dtype=f_disc.dtype
+            )
+            f_disc_full = torch.cat([f_disc, self_loop_zeros], dim=1)
+
+            x_conc = conv.lin_conc(x)
+            x_disc = conv.lin_disc(x)
+            messages = (
+                (1.0 - f_disc_full.unsqueeze(-1)) * x_conc[:, src, :]
+                + f_disc_full.unsqueeze(-1) * x_disc[:, src, :]
+            )
+        else:
+            x_lin = conv.lin(x)
+            messages = x_lin[:, src, :]
+
+        q_i = conv.gate_query(x)[:, tgt, :]
+        k_m = conv.gate_key(messages)
+        gate = torch.sigmoid(q_i + k_m)
+        messages = gate * messages
+        messages = messages * norm[None, :, None]
+
+        tgt_idx = tgt[None, :, None].expand(batch, n_edges, out_channels)
+        expected = torch.zeros(
+            batch, num_nodes, out_channels, device=x.device, dtype=x.dtype
+        )
+        expected.scatter_add_(1, tgt_idx, messages)
+        if conv.bias is not None:
+            expected = expected + conv.bias
+
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_reareaconv_gate_impl_auto_prefers_node_for_fp32() -> None:
+    """Auto mode should pick the node-level path for regular fp32 execution."""
+    conv = ReaReaConv(4, 4, use_gate=True, gate_impl="auto")
+    x = torch.randn(2, 3, 4)
+    assert conv._resolve_gate_impl(x) == "node"
+
+
+def test_reareaconv_gate_impl_auto_prefers_edge_for_bfloat16() -> None:
+    """Auto mode should pick the edge-level path for low-precision tensors."""
+    conv = ReaReaConv(4, 4, use_gate=True, gate_impl="auto")
+    x = torch.randn(2, 3, 4, dtype=torch.bfloat16)
+    assert conv._resolve_gate_impl(x) == "edge"

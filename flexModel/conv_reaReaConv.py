@@ -180,6 +180,11 @@ class ReaReaConv(torch.nn.Module):
             target's raw features and the proposed message (which already
             encodes source features, edge type, and coupling physics).
             Compatible with both disc and non-disc modes.
+        gate_impl: Implementation used for ``W_k @ m_raw`` when ``use_gate=True``.
+            ``"edge"`` applies ``gate_key`` directly on edge messages.
+            ``"node"`` applies it on node-level transformed features and then
+            gathers/blends on edges. ``"auto"`` uses the edge-level path under
+            autocast or low-precision dtypes and the node-level path otherwise.
         f_disc_orig: Static f_disc per edge, shape (n_edges,), computed from
             the metabolic graph under the all-positive-flux assumption.
             Required when use_disc=True. Stored as a non-learnable buffer.
@@ -200,6 +205,7 @@ class ReaReaConv(torch.nn.Module):
         out_channels: int,
         use_disc: bool = False,
         use_gate: bool = False,
+        gate_impl: str = "auto",
         f_disc_orig: Tensor | None = None,
         temperature: float = 2.0,
         add_self_loops: bool = True,
@@ -210,6 +216,11 @@ class ReaReaConv(torch.nn.Module):
         self.out_channels = out_channels
         self.use_disc = use_disc
         self.use_gate = use_gate
+        if gate_impl not in {"auto", "edge", "node"}:
+            raise ValueError(
+                f"gate_impl must be one of 'auto', 'edge', or 'node', got {gate_impl!r}."
+            )
+        self.gate_impl = gate_impl
         self.temperature_scale = temperature
         self.add_self_loops = add_self_loops
 
@@ -247,6 +258,14 @@ class ReaReaConv(torch.nn.Module):
     def _effective_temperature(self, n_reactions: int) -> float:
         """Return the flux-sign temperature scaled to the reaction count."""
         return max(self.temperature_scale / n_reactions, 1e-7)
+
+    def _resolve_gate_impl(self, x: Tensor) -> str:
+        """Return the runtime gate implementation for the current precision mode."""
+        if self.gate_impl != "auto":
+            return self.gate_impl
+        if torch.is_autocast_enabled() or x.dtype in (torch.float16, torch.bfloat16):
+            return "edge"
+        return "node"
 
     def reset_parameters(self) -> None:
         if self.use_disc:
@@ -322,6 +341,7 @@ class ReaReaConv(torch.nn.Module):
         edge_index_norm, norm, n_orig = self._get_norm(edge_index, n_nodes)
         src, tgt = edge_index_norm[0], edge_index_norm[1]
         n_edges = edge_index_norm.shape[1]
+        gate_impl = self._resolve_gate_impl(x) if self.use_gate else "edge"
 
         if self.use_disc:
             if current_fluxes is None:
@@ -366,7 +386,7 @@ class ReaReaConv(torch.nn.Module):
             fd = f_disc_full.unsqueeze(-1)  # (batch, n_edges, 1)
             messages = (1.0 - fd) * x_conc_j + fd * x_disc_j
 
-            if self.use_gate:
+            if self.use_gate and gate_impl == "node":
                 k_conc_j = self.gate_key(x_conc)[:, src, :]  # (batch, n_edges, out_ch)
                 k_disc_j = self.gate_key(x_disc)[:, src, :]  # (batch, n_edges, out_ch)
                 k_m = (1.0 - fd) * k_conc_j + fd * k_disc_j
@@ -375,11 +395,13 @@ class ReaReaConv(torch.nn.Module):
             out_ch = x_lin.shape[-1]
             messages = x_lin[:, src, :]  # (batch, n_edges, out_ch)
 
-            if self.use_gate:
+            if self.use_gate and gate_impl == "node":
                 k_m = self.gate_key(x_lin)[:, src, :]  # (batch, n_edges, out_ch)
 
         if self.use_gate:
             q_i = self.gate_query(x)[:, tgt, :]  # (batch, n_edges, out_ch)
+            if gate_impl == "edge":
+                k_m = self.gate_key(messages)  # (batch, n_edges, out_ch)
             gate = torch.sigmoid(q_i + k_m)  # (batch, n_edges, out_ch)
             messages = gate * messages
 

@@ -68,66 +68,6 @@ class ExpressionAlignmentError(ValueError):
 
 
 @dataclass(frozen=True)
-class ExpressionFill:
-    """A scalar missing-gene floor fitted once from training expression."""
-
-    scale: Literal["nonnegative", "centered"]
-    percentile: float | None
-    value: float
-
-    def __post_init__(self) -> None:
-        if self.scale not in ("nonnegative", "centered"):
-            raise ExpressionAlignmentError("scale must be 'nonnegative' or 'centered'")
-        if (
-            isinstance(self.value, bool)
-            or not isinstance(self.value, Real)
-            or not isfinite(self.value)
-        ):
-            raise ExpressionAlignmentError(
-                "Expression fill value must be finite and real"
-            )
-        if self.percentile is not None:
-            if (
-                isinstance(self.percentile, bool)
-                or not isinstance(self.percentile, Real)
-                or not isfinite(self.percentile)
-                or not 0 <= self.percentile <= 100
-            ):
-                raise ExpressionAlignmentError(
-                    "percentile must be finite and in [0, 100]"
-                )
-            if self.scale != "centered":
-                raise ExpressionAlignmentError(
-                    "percentile applies only to centered expression"
-                )
-            object.__setattr__(self, "percentile", float(self.percentile))
-        if self.scale == "nonnegative" and self.value != 0:
-            raise ExpressionAlignmentError(
-                "Nonnegative expression requires fill value zero"
-            )
-        if abs(self.value) > np.finfo(np.float32).max:
-            raise ExpressionAlignmentError("Expression fill value overflows float32")
-        object.__setattr__(self, "value", float(self.value))
-
-    @classmethod
-    def from_mapping(cls, metadata: Mapping[str, object]) -> ExpressionFill:
-        """Restore a validated floor using only built-in checkpoint types."""
-        if not isinstance(metadata, Mapping) or set(metadata) != {
-            "scale",
-            "percentile",
-            "value",
-        }:
-            raise ExpressionAlignmentError(
-                "expression_fill must contain scale, percentile and value"
-            )
-        return cls(**metadata)
-
-    def to_mapping(self) -> dict[str, object]:
-        """Return plain metadata without training expression or fitted tensors."""
-        return asdict(self)
-
-
-@dataclass(frozen=True)
 class BundleIdentity:
     """Checkpoint-safe identity and canonical axes of the source bundle."""
 
@@ -417,89 +357,56 @@ def _expression_inputs(
     return tensor, columns
 
 
-def fit_expression_fill(
-    values: torch.Tensor | np.ndarray,
-    gene_ids: Sequence[str],
-    canonical_genes: tuple[str, ...],
-    *,
-    scale: Literal["nonnegative", "centered"] = "nonnegative",
-    percentile: float | None = None,
-) -> ExpressionFill:
-    """Fit one scalar floor from observed modeled genes in training data.
-
-    Extra genes and absent-gene placeholders are excluded. Nonnegative data
-    uses zero; centered data uses its observed minimum or requested percentile.
-    Computation is on CPU and does not fit any other preprocessing.
-    """
-    ExpressionFill(scale, percentile, 0.0)
-    tensor, columns = _expression_inputs(
-        values, gene_ids, canonical_genes, torch.device("cpu")
-    )
-    if tensor.shape[0] == 0:
-        raise ExpressionAlignmentError(
-            "Cannot fit expression fill from empty training cells"
-        )
-    observed = tensor[:, [columns[item] for item in canonical_genes if item in columns]]
-    minimum = float(observed.min().item())
-    if scale == "nonnegative":
-        if minimum < 0:
-            raise ExpressionAlignmentError(
-                "Nonnegative expression contains negative values"
-            )
-        return ExpressionFill(scale, None, 0.0)
-    value = (
-        minimum
-        if percentile is None
-        else float(np.percentile(observed.detach().numpy(), percentile))
-    )
-    return ExpressionFill(scale, percentile, value)
-
-
 def align_expression(
     values: torch.Tensor | np.ndarray,
     gene_ids: Sequence[str],
     canonical_genes: tuple[str, ...],
     device: torch.device,
     *,
-    missing_genes: Literal["error", "zero", "fitted"] = "error",
-    expression_fill: ExpressionFill | None = None,
+    scale: Literal["nonnegative", "centered"] = "nonnegative",
+    percentile: float | None = None,
 ) -> torch.Tensor:
     """Return independent float32 (cells, canonical genes) values on device.
 
-    Extra input genes are ignored. Missing genes raise by default, can be
-    filled explicitly with zero, or use a frozen training-derived floor.
-    No expression normalization or fitting occurs here.
+    Extra genes are discarded. Missing genes receive zero for nonnegative
+    input or the observed minimum for centered input. An optional percentile
+    in [0, 100] replaces the centered minimum. Statistics use only observed
+    modeled genes in this call; no fill state or normalization is retained.
     """
-    if missing_genes not in ("error", "zero", "fitted"):
-        raise ExpressionAlignmentError(
-            "missing_genes must be 'error', 'zero' or 'fitted'"
-        )
-    if missing_genes == "fitted" and expression_fill is None:
-        raise ExpressionAlignmentError(
-            "Call fit_expression_fill on training data before using fitted fill"
-        )
+    if scale not in ("nonnegative", "centered"):
+        raise ExpressionAlignmentError("scale must be 'nonnegative' or 'centered'")
+    if percentile is not None:
+        if (
+            isinstance(percentile, bool)
+            or not isinstance(percentile, Real)
+            or not isfinite(percentile)
+            or not 0 <= percentile <= 100
+        ):
+            raise ExpressionAlignmentError("percentile must be finite and in [0, 100]")
+        if scale != "centered":
+            raise ExpressionAlignmentError(
+                "percentile applies only to centered expression"
+            )
     tensor, columns = _expression_inputs(values, gene_ids, canonical_genes, device)
     missing = [item for item in canonical_genes if item not in columns]
-    if missing and missing_genes == "error":
+    observed = tensor[:, [columns[item] for item in canonical_genes if item in columns]]
+    if scale == "nonnegative" and (observed < 0).any():
         raise ExpressionAlignmentError(
-            f"Expression is missing required genes: {', '.join(missing[:10])}"
+            "Nonnegative expression contains negative values"
         )
-    fill_value = 0.0
-    if missing_genes == "fitted":
-        fill_value = expression_fill.value
-        observed_columns = [
-            columns[item] for item in canonical_genes if item in columns
-        ]
-        if (
-            expression_fill.scale == "nonnegative"
-            and (tensor[:, observed_columns] < 0).any()
-        ):
-            raise ExpressionAlignmentError(
-                "Nonnegative expression contains negative values"
-            )
     if missing:
-        # A shared fill column handles all absent genes while index_select
-        # preserves gradients and independent storage for observed columns.
+        fill_value = 0.0
+        if scale == "centered":
+            if observed.numel() == 0:
+                raise ExpressionAlignmentError(
+                    "Cannot determine a centered fill value from empty expression"
+                )
+            fill_value = (
+                float(observed.min().item())
+                if percentile is None
+                else float(np.percentile(observed.detach().cpu().numpy(), percentile))
+            )
+        # A shared fill column preserves gradients for observed input values.
         tensor = torch.cat(
             (tensor, tensor.new_full((tensor.shape[0], 1), fill_value)), dim=1
         )

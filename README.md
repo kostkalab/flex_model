@@ -46,6 +46,9 @@ Since conda's environment.yml only supports a single global pip index URL, we sp
 
 ## Quick Start
 
+If you do not have access to `flex_species`, skip to
+[tensor-based construction](#tensor-based-construction) and supply your own inputs.
+
 Install [`flex_species`](https://github.com/kostkalab/flex_species#usage) first
 and configure its repository credentials for the initial bundle download. This
 complete CPU example loads mouse bundle **0.3.0**, creates **113 synthetic cells**
@@ -74,10 +77,9 @@ model = AlignedFlexModule.from_bundle(
 rng = np.random.default_rng(31)
 expression_values = rng.lognormal(size=(113, len(mouse.genes))).astype(np.float32)
 expression_gene_ids = mouse.genes
-# Fit once from training input; nonnegative expression uses a zero floor.
-model.fit_expression_fill(expression_values, expression_gene_ids, scale="nonnegative")
+# Align gene IDs and use zero for any missing genes in nonnegative input.
 expression = model.align_expression(
-    expression_values, expression_gene_ids, missing_genes="fitted"
+    expression_values, expression_gene_ids
 )
 
 # Run in small batches to bound graph-message memory.
@@ -103,70 +105,32 @@ synthetic values and gene IDs with your expression data for actual use.
 `FlexModule.from_bundle(mouse, ...)` uses the same adapter without the learned
 alignment bottleneck; omit `z_dim` for that class.
 
-### Bundle inputs and expression ordering
-
-Load species data separately and pass the validated bundle to either model
-class. The model adapter does not download data, fit preprocessing, or transform
-embeddings.
+### Expression alignment and missing genes
 
 `align_expression` returns an independent float32 tensor on the model device,
-with columns in `mouse.genes` order. Extra genes are ignored; duplicate IDs,
-missing required genes, incompatible shapes, and nonfinite values raise
-`ExpressionAlignmentError` by default. To treat absent enzymes as zero expression:
+with columns in `mouse.genes` order, extra genes discarded, and missing genes
+filled according to the input scale:
 
 ```python
+# Nonnegative expression: fill missing genes with zero (default).
+expression = model.align_expression(values, gene_ids)
+
+# Centered expression: fill with the observed minimum.
+expression = model.align_expression(values, gene_ids, scale="centered")
+
+# Or use the 1st percentile instead of the minimum.
 expression = model.align_expression(
-    expression_values, expression_gene_ids, missing_genes="zero"
+    values, gene_ids, scale="centered", percentile=1
 )
 ```
 
-This discards extra input genes, restores canonical gene order, and inserts zero
-columns for missing enzymes. Duplicate IDs and invalid values still raise;
-inputs with no modeled genes also raise to catch identifier mismatches.
-`missing_genes="error"` is the strict default. No normalization is performed.
+The minimum/percentile is computed from observed modeled genes in the supplied
+matrix, before padding. No normalization or fill state is stored. Duplicate IDs,
+invalid values, and inputs with no modeled genes raise `ExpressionAlignmentError`.
+Filling retains gene nodes and edges; it does not prune the graph. Direct calls
+to `model(...)` require expression columns already in canonical gene order.
 
-### Fitting a missing-gene floor
-
-For a reusable training policy, fit the fill value **once on training data**:
-
-```python
-# On an unfitted model, choose the scale of your supplied expression values.
-model.fit_expression_fill(train_values, train_gene_ids, scale="centered")
-train_expression = model.align_expression(
-    train_values, train_gene_ids, missing_genes="fitted"
-)
-validation_expression = model.align_expression(
-    validation_values, validation_gene_ids, missing_genes="fitted"
-)
-```
-
-- `scale="nonnegative"` uses **zero** and rejects negative modeled-gene values.
-- `scale="centered"` uses the **observed training minimum** by default.
-- For a percentile alternative, use `scale="centered", percentile=1` in the
-  fitting call to select the **1st percentile** instead of the minimum.
-
-The minimum or percentile is one scalar pooled across training cells and
-observed modeled genes, excluding extra genes and missing-gene placeholders.
-It is an explicit floor approximation, not an inferred inverse of centering.
-The input scale must be specified consistently; the method does not center,
-scale, or otherwise preprocess expression.
-
-The fitted `model.expression_fill` policy is immutable and cannot be refitted
-on the same model. Validation/prediction reuse it without computing new batch
-statistics. Its scale, percentile, and scalar value are saved in checkpoint
-hyperparameters and restored by `load_from_bundle_checkpoint`. Training
-expression itself is never stored in the model or checkpoint. Strict alignment
-and the explicit `missing_genes="zero"` option remain available.
-
-Filling gives the same model input, predictions, and losses as supplying
-explicit columns with that fill value. It does not remove gene nodes or edges:
-learnable message-layer biases can produce messages from zero features, and
-filled columns still participate in loss centering, module maps, and bottleneck
-reconstruction. The model does not distinguish unmeasured from observed-zero
-expression after filling with zero.
-
-Direct tensor calls to `model(...)` still require canonical gene order; use
-`align_expression` whenever input ordering is not already guaranteed.
+### Bundle compatibility and checkpoints
 
 The adapter supports bundle schema 3 and the current reaction-graph,
 currency-selection, projection, and module-diffusion contracts. It checks
@@ -400,7 +364,7 @@ pytest tests/test_training.py -v -s
 - Runs both models on synthetic expression with discordance, gating, and projection enabled
 - Checks expression permutations, extra/missing genes, independent copies, and invalid inputs
 - Checks optional zero filling against explicit zero columns for both models' predictions and losses
-- Checks training-only minimum/percentile fitting, frozen reuse, and checkpoint restoration of fill policies
+- Checks direct minimum/percentile filling and independent per-call behavior
 - Verifies distinct edge attributes stay aligned with both reaction directions
 - Checks the released projection orientation and existing flux normalization
 - Trains both model classes with discordance and gating, and verifies checkpoint identity restoration/rejection

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -191,6 +192,247 @@ def test_align_expression_accepts_reversed_numpy_views() -> None:
     torch.testing.assert_close(
         actual, torch.tensor(values, dtype=torch.float32), rtol=0, atol=0
     )
+
+
+@pytest.mark.parametrize("as_tensor", [False, True])
+def test_align_expression_zero_fills_partial_columns(as_tensor: bool) -> None:
+    model = FlexModule.from_bundle(make_bundle())
+    values = np.asarray([[30, 999, 10], [3, 888, 1]], dtype=np.float64)
+    original = values.copy()
+    source = torch.tensor(values) if as_tensor else values
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.align_expression(source, ["g3", "extra", "g0"])
+    aligned = model.align_expression(
+        source, ["g3", "extra", "g0"], missing_genes="zero"
+    )
+    torch.testing.assert_close(
+        aligned,
+        torch.tensor([[10, 0, 0, 30], [1, 0, 0, 3]], dtype=torch.float32),
+        rtol=0,
+        atol=0,
+    )
+    np.testing.assert_array_equal(values, original)
+
+
+def test_align_expression_zero_mode_preserves_gradient_for_present_values() -> None:
+    model = FlexModule.from_bundle(make_bundle())
+    values = torch.tensor([[2.0, 7.0]], requires_grad=True)
+    aligned = model.align_expression(values, ["g2", "g0"], missing_genes="zero")
+    aligned.sum().backward()
+    torch.testing.assert_close(values.grad, torch.ones_like(values), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("module_cls", [FlexModule, AlignedFlexModule])
+def test_zero_filled_expression_matches_explicit_zeros_for_predictions_and_losses(
+    module_cls: type[FlexModule],
+) -> None:
+    torch.manual_seed(41)
+    bundle = make_bundle()
+    partial_model = module_cls.from_bundle(
+        bundle,
+        nlayers=2,
+        use_disc=True,
+        use_rea_rea_gate=True,
+        flx_project=True,
+    ).eval()
+    torch.manual_seed(41)
+    full_model = module_cls.from_bundle(
+        bundle,
+        nlayers=2,
+        use_disc=True,
+        use_rea_rea_gate=True,
+        flx_project=True,
+    ).eval()
+    partial = partial_model.align_expression(
+        np.asarray([[3.0, 1.0], [6.0, 2.0], [9.0, 3.0]]),
+        ["g3", "g0"],
+        missing_genes="zero",
+    )
+    full = full_model.align_expression(
+        np.asarray([[1.0, 0.0, 0.0, 3.0], [2.0, 0.0, 0.0, 6.0], [3.0, 0.0, 0.0, 9.0]]),
+        bundle.genes,
+    )
+    with torch.no_grad():
+        partial_prediction = partial_model(partial)
+        full_prediction = full_model(full)
+        partial_losses = partial_model.losses(partial, *partial_prediction)
+        full_losses = full_model.losses(full, *full_prediction)
+    for actual, expected in zip(partial_prediction, full_prediction):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(partial_losses, full_losses, rtol=0, atol=0)
+
+
+def test_align_expression_zero_mode_rejects_invalid_mode_no_overlap_and_invalid_inputs() -> (
+    None
+):
+    model = FlexModule.from_bundle(make_bundle())
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.align_expression(np.ones((1, 1)), ["g0"], missing_genes="pad")
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.align_expression(np.ones((1, 1)), ["extra"], missing_genes="zero")
+    for values, ids in (
+        (np.ones((1, 2)), ["g0", "g0"]),
+        (np.asarray([[1, np.nan]]), ["g0", "g1"]),
+        (np.asarray([[1, 2]]), ["g0"]),
+    ):
+        with pytest.raises(flexModel.ExpressionAlignmentError):
+            model.align_expression(values, ids, missing_genes="zero")
+
+
+def test_fit_expression_fill_scales_exclude_extras_and_fitted_alignment_is_frozen() -> (
+    None
+):
+    model = FlexModule.from_bundle(make_bundle())
+    training = np.asarray([[4.0, -1000.0, 2.0], [6.0, 1000.0, 8.0]])
+    value = model.fit_expression_fill(
+        training, ["g0", "extra", "g2"], scale="centered", percentile=25
+    )
+    assert value == pytest.approx(3.5)
+    assert model.expression_fill.scale == "centered"
+    assert model.expression_fill.percentile == 25
+    assert model.expression_fill.value == value
+    assert model.hparams["expression_fill"] == {
+        "scale": "centered",
+        "percentile": 25,
+        "value": value,
+    }
+    with pytest.raises(FrozenInstanceError):
+        model.expression_fill.value = 999
+    aligned = model.align_expression(
+        np.asarray([[-99.0, 20.0]]), ["g0", "g3"], missing_genes="fitted"
+    )
+    torch.testing.assert_close(
+        aligned, torch.tensor([[-99.0, value, value, 20.0]]), rtol=0, atol=0
+    )
+    assert model.expression_fill.value == value
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.fit_expression_fill(training, ["g0", "extra", "g2"])
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        FlexModule.from_bundle(make_bundle()).align_expression(
+            np.ones((1, 1)), ["g0"], missing_genes="fitted"
+        )
+
+
+def test_fit_expression_fill_nonnegative_policy_is_zero_and_validates_values() -> None:
+    model = FlexModule.from_bundle(make_bundle())
+    value = model.fit_expression_fill(
+        np.asarray([[4.0, -1000.0, 2.0], [6.0, 1000.0, 8.0]]),
+        ["g0", "extra", "g2"],
+    )
+    assert value == 0
+    assert model.expression_fill.scale == "nonnegative"
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.align_expression(np.asarray([[-1.0]]), ["g0"], missing_genes="fitted")
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.fit_expression_fill(np.asarray([[-1.0]]), ["g0"])
+
+
+@pytest.mark.parametrize("as_tensor", [False, True])
+@pytest.mark.parametrize(("percentile", "expected"), [(None, -4.0), (1, -3.94)])
+def test_fit_expression_fill_centered_uses_negative_observed_minimum_or_percentile(
+    as_tensor: bool, percentile: float | None, expected: float
+) -> None:
+    model = FlexModule.from_bundle(make_bundle())
+    values = np.asarray([[-4.0, -1000.0, -2.0], [2.0, 1000.0, 6.0]])
+    source = torch.tensor(values) if as_tensor else values
+    value = model.fit_expression_fill(
+        source, ["g0", "extra", "g2"], scale="centered", percentile=percentile
+    )
+    assert value == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("module_cls", [FlexModule, AlignedFlexModule])
+def test_fitted_expression_fill_checkpoint_matches_explicit_fill_predictions_and_losses(
+    tmp_path: Path, module_cls: type[FlexModule]
+) -> None:
+    options = (
+        {"z_dim": 4, "noise_std": 0.23, "alpha_align": 0.7}
+        if module_cls is AlignedFlexModule
+        else {}
+    )
+    torch.manual_seed(47)
+    model = module_cls.from_bundle(
+        make_bundle(),
+        nlayers=2,
+        use_disc=True,
+        use_rea_rea_gate=True,
+        flx_project=True,
+        **options,
+    ).eval()
+    fit = np.asarray([[4.0, 2.0], [6.0, 8.0]])
+    model.fit_expression_fill(fit, ["g0", "g2"], scale="centered")
+    path = tmp_path / "fitted_fill.ckpt"
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "hyper_parameters": dict(model.hparams),
+            "pytorch-lightning_version": L.__version__,
+        },
+        path,
+    )
+    restored = module_cls.load_from_bundle_checkpoint(path, make_bundle()).eval()
+    assert restored.expression_fill == model.expression_fill
+    partial_values = np.asarray([[3.0, 1.0], [6.0, 2.0], [9.0, 3.0]])
+    partial = restored.align_expression(
+        partial_values, ["g3", "g0"], missing_genes="fitted"
+    )
+    fill = model.expression_fill.value
+    complete = restored.align_expression(
+        np.asarray(
+            [[1.0, fill, fill, 3.0], [2.0, fill, fill, 6.0], [3.0, fill, fill, 9.0]]
+        ),
+        ["g0", "g1", "g2", "g3"],
+    )
+    with torch.no_grad():
+        actual_prediction = restored(partial)
+        expected_prediction = restored(complete)
+        actual_losses = restored.losses(partial, *actual_prediction)
+        expected_losses = restored.losses(complete, *expected_prediction)
+    for actual, expected in zip(actual_prediction, expected_prediction):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_losses, expected_losses, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("values", "ids", "kwargs"),
+    [
+        (np.empty((0, 1)), ["g0"], {}),
+        (np.ones((1, 1)), ["extra"], {}),
+        (np.ones((1, 2)), ["g0", "g0"], {}),
+        (np.asarray([[np.nan]]), ["g0"], {}),
+        (np.asarray([[-1.0]]), ["g0"], {}),
+    ],
+)
+def test_fit_expression_fill_rejects_invalid_training_data(
+    values: np.ndarray, ids: list[str], kwargs: dict[str, object]
+) -> None:
+    model = FlexModule.from_bundle(make_bundle())
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.fit_expression_fill(values, ids, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"scale": "unknown"},
+        {"scale": "nonnegative", "percentile": 1},
+        {"scale": "centered", "percentile": -1},
+        {"scale": "centered", "percentile": 101},
+    ],
+)
+def test_fit_expression_fill_rejects_invalid_scale_and_percentile(
+    kwargs: dict[str, object],
+) -> None:
+    model = FlexModule.from_bundle(make_bundle())
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        model.fit_expression_fill(np.ones((1, 1)), ["g0"], **kwargs)
+
+
+def test_from_bundle_rejects_malformed_expression_fill_policy() -> None:
+    with pytest.raises(flexModel.ExpressionAlignmentError):
+        FlexModule.from_bundle(
+            make_bundle(), expression_fill={"scale": "centered", "value": "bad"}
+        )
 
 
 @pytest.mark.parametrize(

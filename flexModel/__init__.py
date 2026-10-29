@@ -19,6 +19,7 @@ from .bundle_adapter import (
     BundleIdentity,
     BundleIdentityError,
     ExpressionAlignmentError,
+    ExpressionFill,
 )
 from .conv_gadconv import GADConv
 from .conv_gatedGraphConv import ResGatedConv
@@ -44,6 +45,7 @@ __all__ = [
     "BundleIdentity",
     "BundleIdentityError",
     "ExpressionAlignmentError",
+    "ExpressionFill",
     "FlexModule",
     "AlignedFlexModule",
     "FlexGNN",

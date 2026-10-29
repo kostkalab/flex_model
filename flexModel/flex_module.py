@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import lightning as L
 import numpy as np
@@ -13,8 +13,10 @@ from .bundle_adapter import (
     BundleIdentity,
     BundleIdentityError,
     ExpressionAlignmentError,
+    ExpressionFill,
     align_expression as _align_expression,
     bundle_model_inputs,
+    fit_expression_fill as _fit_expression_fill,
     reject_bundle_overrides,
 )
 from .flex_gnn import build_flex_gnn
@@ -69,6 +71,8 @@ class FlexModule(L.LightningModule):
             logged step.
         bundle_metadata: Source bundle identity, set by ``from_bundle`` and
             restored from checkpoint hyperparameters.
+        expression_fill: Frozen training-derived missing-gene fill metadata,
+            set by ``fit_expression_fill`` and restored from checkpoints.
     """
 
     # ------------------------------------------------------------------
@@ -105,8 +109,14 @@ class FlexModule(L.LightningModule):
         cor_scale: float = 1.0,
         bundle_metadata: Mapping[str, object] | None = None,
         _expected_bundle_metadata: Mapping[str, object] | None = None,
+        expression_fill: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__()
+        self.expression_fill = (
+            ExpressionFill.from_mapping(expression_fill)
+            if expression_fill is not None
+            else None
+        )
         self.bundle_identity = (
             BundleIdentity.from_mapping(bundle_metadata)
             if bundle_metadata is not None
@@ -178,6 +188,10 @@ class FlexModule(L.LightningModule):
         if self.bundle_identity is not None:
             self.save_hyperparameters(
                 {"bundle_metadata": self.bundle_identity.to_mapping()}
+            )
+        if self.expression_fill is not None:
+            self.save_hyperparameters(
+                {"expression_fill": self.expression_fill.to_mapping()}
             )
 
         self.register_buffer(
@@ -267,21 +281,68 @@ class FlexModule(L.LightningModule):
             **model_options,
         )
 
+    def fit_expression_fill(
+        self,
+        values: torch.Tensor | np.ndarray,
+        gene_ids: Sequence[str],
+        *,
+        scale: Literal["nonnegative", "centered"] = "nonnegative",
+        percentile: float | None = None,
+    ) -> float:
+        """Fit and save a missing-gene floor once using training expression.
+
+        Observed modeled genes determine the floor; extras are excluded.
+        Nonnegative input uses zero. Centered input uses the observed minimum,
+        or a percentile in [0, 100] when explicitly requested. The scalar and
+        policy are checkpointed; expression values are not stored. Use
+        ``align_expression(..., missing_genes="fitted")`` for subsequent data.
+        """
+        if self.bundle_identity is None:
+            raise ExpressionAlignmentError(
+                "fit_expression_fill requires a bundle-backed model"
+            )
+        if self.expression_fill is not None:
+            raise ExpressionAlignmentError(
+                "Expression fill is already fitted and cannot be refitted"
+            )
+        policy = _fit_expression_fill(
+            values,
+            gene_ids,
+            self.bundle_identity.genes,
+            scale=scale,
+            percentile=percentile,
+        )
+        self.expression_fill = policy
+        self.save_hyperparameters({"expression_fill": policy.to_mapping()})
+        return policy.value
+
     def align_expression(
-        self, values: torch.Tensor | np.ndarray, gene_ids: Sequence[str]
+        self,
+        values: torch.Tensor | np.ndarray,
+        gene_ids: Sequence[str],
+        *,
+        missing_genes: Literal["error", "zero", "fitted"] = "error",
     ) -> torch.Tensor:
         """Copy and reorder (cells, input genes) into canonical bundle gene order.
 
         Returns float32 on the model device, ignoring extra genes and rejecting
-        duplicate IDs, missing genes and nonfinite values. No preprocessing or
-        missing-gene imputation is performed.
+        duplicate IDs and nonfinite values. Missing genes raise by default;
+        ``missing_genes="zero"`` adds zero-expression columns. The ``"fitted"``
+        policy reuses the floor from ``fit_expression_fill`` without refitting.
+        Filling supplies explicit expression values; it does not remove edges.
+        Inputs must overlap the canonical genes. No normalization is performed.
         """
         if self.bundle_identity is None:
             raise ExpressionAlignmentError(
                 "align_expression requires a model constructed from a bundle"
             )
         return _align_expression(
-            values, gene_ids, self.bundle_identity.genes, self.device
+            values,
+            gene_ids,
+            self.bundle_identity.genes,
+            self.device,
+            missing_genes=missing_genes,
+            expression_fill=self.expression_fill,
         )
 
     @staticmethod

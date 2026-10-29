@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any
+from math import isfinite
+from numbers import Real
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import torch
@@ -63,6 +65,66 @@ class BundleIdentityError(ValueError):
 
 class ExpressionAlignmentError(ValueError):
     """Expression columns cannot be aligned to the model's canonical genes."""
+
+
+@dataclass(frozen=True)
+class ExpressionFill:
+    """A scalar missing-gene floor fitted once from training expression."""
+
+    scale: Literal["nonnegative", "centered"]
+    percentile: float | None
+    value: float
+
+    def __post_init__(self) -> None:
+        if self.scale not in ("nonnegative", "centered"):
+            raise ExpressionAlignmentError("scale must be 'nonnegative' or 'centered'")
+        if (
+            isinstance(self.value, bool)
+            or not isinstance(self.value, Real)
+            or not isfinite(self.value)
+        ):
+            raise ExpressionAlignmentError(
+                "Expression fill value must be finite and real"
+            )
+        if self.percentile is not None:
+            if (
+                isinstance(self.percentile, bool)
+                or not isinstance(self.percentile, Real)
+                or not isfinite(self.percentile)
+                or not 0 <= self.percentile <= 100
+            ):
+                raise ExpressionAlignmentError(
+                    "percentile must be finite and in [0, 100]"
+                )
+            if self.scale != "centered":
+                raise ExpressionAlignmentError(
+                    "percentile applies only to centered expression"
+                )
+            object.__setattr__(self, "percentile", float(self.percentile))
+        if self.scale == "nonnegative" and self.value != 0:
+            raise ExpressionAlignmentError(
+                "Nonnegative expression requires fill value zero"
+            )
+        if abs(self.value) > np.finfo(np.float32).max:
+            raise ExpressionAlignmentError("Expression fill value overflows float32")
+        object.__setattr__(self, "value", float(self.value))
+
+    @classmethod
+    def from_mapping(cls, metadata: Mapping[str, object]) -> ExpressionFill:
+        """Restore a validated floor using only built-in checkpoint types."""
+        if not isinstance(metadata, Mapping) or set(metadata) != {
+            "scale",
+            "percentile",
+            "value",
+        }:
+            raise ExpressionAlignmentError(
+                "expression_fill must contain scale, percentile and value"
+            )
+        return cls(**metadata)
+
+    def to_mapping(self) -> dict[str, object]:
+        """Return plain metadata without training expression or fitted tensors."""
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -309,17 +371,13 @@ def bundle_model_inputs(bundle: FlexSpeciesBundle) -> dict[str, object]:
     return inputs
 
 
-def align_expression(
+def _expression_inputs(
     values: torch.Tensor | np.ndarray,
     gene_ids: Sequence[str],
     canonical_genes: tuple[str, ...],
     device: torch.device,
-) -> torch.Tensor:
-    """Return independent float32 (cells, canonical genes) values on device.
-
-    Extra input genes are ignored. Required genes must occur exactly once;
-    missing genes are never filled and no expression normalization is performed.
-    """
+) -> tuple[torch.Tensor, dict[str, int]]:
+    """Validate (cells, input genes) values and unique, overlapping string IDs."""
     if isinstance(gene_ids, (str, bytes)):
         raise ExpressionAlignmentError("gene_ids must be a sequence of string IDs")
     ids = tuple(gene_ids)
@@ -336,12 +394,9 @@ def align_expression(
             "Expression must have shape (cells, len(gene_ids))"
         )
     columns = {identifier: i for i, identifier in enumerate(ids)}
-    missing = [
-        identifier for identifier in canonical_genes if identifier not in columns
-    ]
-    if missing:
+    if not any(identifier in columns for identifier in canonical_genes):
         raise ExpressionAlignmentError(
-            f"Expression is missing required genes: {', '.join(missing[:10])}"
+            "Expression gene IDs have no overlap with the model's canonical genes"
         )
     if isinstance(values, np.ndarray):
         if values.dtype.kind not in "fiu":
@@ -359,5 +414,98 @@ def align_expression(
         raise ExpressionAlignmentError(
             "Expression contains nonfinite or float32-overflow values"
         )
-    indices = torch.tensor([columns[item] for item in canonical_genes], device=device)
+    return tensor, columns
+
+
+def fit_expression_fill(
+    values: torch.Tensor | np.ndarray,
+    gene_ids: Sequence[str],
+    canonical_genes: tuple[str, ...],
+    *,
+    scale: Literal["nonnegative", "centered"] = "nonnegative",
+    percentile: float | None = None,
+) -> ExpressionFill:
+    """Fit one scalar floor from observed modeled genes in training data.
+
+    Extra genes and absent-gene placeholders are excluded. Nonnegative data
+    uses zero; centered data uses its observed minimum or requested percentile.
+    Computation is on CPU and does not fit any other preprocessing.
+    """
+    ExpressionFill(scale, percentile, 0.0)
+    tensor, columns = _expression_inputs(
+        values, gene_ids, canonical_genes, torch.device("cpu")
+    )
+    if tensor.shape[0] == 0:
+        raise ExpressionAlignmentError(
+            "Cannot fit expression fill from empty training cells"
+        )
+    observed = tensor[:, [columns[item] for item in canonical_genes if item in columns]]
+    minimum = float(observed.min().item())
+    if scale == "nonnegative":
+        if minimum < 0:
+            raise ExpressionAlignmentError(
+                "Nonnegative expression contains negative values"
+            )
+        return ExpressionFill(scale, None, 0.0)
+    value = (
+        minimum
+        if percentile is None
+        else float(np.percentile(observed.detach().numpy(), percentile))
+    )
+    return ExpressionFill(scale, percentile, value)
+
+
+def align_expression(
+    values: torch.Tensor | np.ndarray,
+    gene_ids: Sequence[str],
+    canonical_genes: tuple[str, ...],
+    device: torch.device,
+    *,
+    missing_genes: Literal["error", "zero", "fitted"] = "error",
+    expression_fill: ExpressionFill | None = None,
+) -> torch.Tensor:
+    """Return independent float32 (cells, canonical genes) values on device.
+
+    Extra input genes are ignored. Missing genes raise by default, can be
+    filled explicitly with zero, or use a frozen training-derived floor.
+    No expression normalization or fitting occurs here.
+    """
+    if missing_genes not in ("error", "zero", "fitted"):
+        raise ExpressionAlignmentError(
+            "missing_genes must be 'error', 'zero' or 'fitted'"
+        )
+    if missing_genes == "fitted" and expression_fill is None:
+        raise ExpressionAlignmentError(
+            "Call fit_expression_fill on training data before using fitted fill"
+        )
+    tensor, columns = _expression_inputs(values, gene_ids, canonical_genes, device)
+    missing = [item for item in canonical_genes if item not in columns]
+    if missing and missing_genes == "error":
+        raise ExpressionAlignmentError(
+            f"Expression is missing required genes: {', '.join(missing[:10])}"
+        )
+    fill_value = 0.0
+    if missing_genes == "fitted":
+        fill_value = expression_fill.value
+        observed_columns = [
+            columns[item] for item in canonical_genes if item in columns
+        ]
+        if (
+            expression_fill.scale == "nonnegative"
+            and (tensor[:, observed_columns] < 0).any()
+        ):
+            raise ExpressionAlignmentError(
+                "Nonnegative expression contains negative values"
+            )
+    if missing:
+        # A shared fill column handles all absent genes while index_select
+        # preserves gradients and independent storage for observed columns.
+        tensor = torch.cat(
+            (tensor, tensor.new_full((tensor.shape[0], 1), fill_value)), dim=1
+        )
+    indices = torch.tensor(
+        [columns.get(item, len(columns)) for item in canonical_genes],
+        dtype=torch.long,
+        device=device,
+    )
     return tensor.index_select(1, indices)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from flexModel.conv_gatedGraphConv import ResGatedConv
 from flexModel.flex_gnn import (
     FlexGNN_Disc_GGConv,
     FlexGNN_Disc_GGConv_LW,
@@ -13,6 +14,28 @@ from flexModel.flex_gnn import (
 )
 from flexModel.flex_module import FlexModule
 from tests.factories import create_flex_module, create_random_problem
+
+
+def test_zero_gene_features_can_send_bias_driven_messages() -> None:
+    """A zero-expression gene is not equivalent to removing its graph edge."""
+    conv = ResGatedConv((2, 2), 2, hidden_channels=2, root_weight=False, bias=False)
+    with torch.no_grad():
+        for layer in (
+            conv.dn_project_src,
+            conv.gate_query,
+            conv.gate_key,
+            conv.gate_value,
+        ):
+            layer.weight.zero_()
+            layer.bias.zero_()
+        conv.gate_value.bias.fill_(1.0)
+        conv.up_project.weight.copy_(torch.eye(2))
+        conv.up_project.bias.zero_()
+        features = (torch.zeros(1, 1, 2), torch.zeros(1, 1, 2))
+        with_edge = conv(features, torch.tensor([[0], [0]]))
+        without_edge = conv(features, torch.empty(2, 0, dtype=torch.long))
+    torch.testing.assert_close(with_edge, torch.full((1, 1, 2), 0.5), rtol=0, atol=0)
+    torch.testing.assert_close(without_edge, torch.zeros(1, 1, 2), rtol=0, atol=0)
 
 
 def test_sample_alignment_matches_pearson_reference() -> None:

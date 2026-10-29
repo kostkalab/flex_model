@@ -41,7 +41,10 @@ class FlexModule(L.LightningModule):
         l_fb: Flux-balance loss weight.
         l_pos: Positivity loss weight.
         l_cor: Module concordance loss weight.
-        l_sco: Sample similarity concordance loss weight.
+        cor_scale: Pairwise concordance scale for the module concordance term.
+            Larger values focus the hinge/logistic loss on harder ranking
+            violations. Default: 1.0.
+        l_sco: Sample similarity Pearson loss weight.
         l_ent: Entropy loss weight.
         lopt_lr: Adam learning rate.
         NSP: Square root of the nullspace projector. Required when
@@ -82,8 +85,11 @@ class FlexModule(L.LightningModule):
         lopt_lr: float = 1e-3,
         NSP: torch.Tensor | None = None,
         log_grad_fracs: int = 0,
+        cor_scale: float = 1.0,
     ) -> None:
         super().__init__()
+        if not math.isfinite(cor_scale) or cor_scale <= 0:
+            raise ValueError("cor_scale must be finite and positive.")
         n_genes = int(Mmg.shape[1])
         n_reactions = int(Mmr.shape[1])
         resolved_ge_edim, resolved_re_edim = self._resolve_embedding_dims(
@@ -130,6 +136,7 @@ class FlexModule(L.LightningModule):
                 "l_fb": l_fb,
                 "l_pos": l_pos,
                 "l_cor": l_cor,
+                "cor_scale": cor_scale,
                 "l_sco": l_sco,
                 "l_ent": l_ent,
                 "lopt_lr": lopt_lr,
@@ -137,6 +144,7 @@ class FlexModule(L.LightningModule):
             }
         )
         self.log_grad_fracs = log_grad_fracs
+        self.cor_scale = cor_scale
 
         self.register_buffer(
             "loss_lms",
@@ -364,10 +372,10 @@ class FlexModule(L.LightningModule):
         flxs_sdt = flxs_sdt / (flxs_sdt.std(dim=1, keepdim=True) + 1e-7)
         a = (self.Mmg @ ge_sdt.t()).t()
         b = (self.Mmr @ flxs_sdt.t()).t()
-        return pairwise_concordance(a, b, diff="relative")
+        return pairwise_concordance(a, b, diff="relative", scale=self.cor_scale)
 
     def loss_sco(self, ge: torch.Tensor, flxs: torch.Tensor) -> torch.Tensor:
-        """Return sample-similarity concordance loss for each sample.
+        """Return sample-similarity Pearson loss for each sample.
 
         Similarity is a batch-level quantity, so the same scalar is expanded to
         all samples in the batch.

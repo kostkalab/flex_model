@@ -12,10 +12,10 @@ Architecture per modality:
 
 Loss:
     L = α * (||x_a - x_a_hat||² + ||x_b - x_b_hat||²)
-      + (1 - α) * concordance(dist(Z_a), dist(Z_b))
+      + (1 - α) * (1 - Pearson(sim(Z_a), sim(Z_b)))
 
 The reconstruction prevents collapse (projecting everything to the same
-point can't reconstruct). The noise prevents memorization. The concordance
+point can't reconstruct). The noise prevents memorization. The correlation
 aligns the two z-spaces so cell-cell distances are comparable.
 
 The tied weights (W^T for decode) mean the optimal W recovers PCA for
@@ -30,6 +30,8 @@ from collections.abc import Callable
 import torch
 import torch.nn as nn
 from torch import Tensor
+
+from .utils import pearson_loss
 
 
 class AlignmentBottleneck(nn.Module):
@@ -135,7 +137,9 @@ def alignment_loss(
         alpha: Balance between reconstruction (alpha) and alignment (1-alpha).
         concordance_fn: Callable(sim_a, sim_b) → scalar loss. Both inputs are
             shape (1, n_pairs) upper-triangle similarity vectors. If None, uses
-            MSE between similarity matrices.
+            one minus Pearson correlation between similarity vectors, using
+            O(batch²) storage. Constant vectors have correlation zero; fewer
+            than two similarity entries contribute zero alignment loss.
 
     Returns:
         Scalar loss.
@@ -165,6 +169,6 @@ def alignment_loss(
     if concordance_fn is not None:
         align = concordance_fn(sim_b_v.unsqueeze(0), sim_a_v.unsqueeze(0)).squeeze(0)
     else:
-        align = (sim_a_v - sim_b_v).pow(2).mean()
+        align = pearson_loss(sim_a_v, sim_b_v)
 
     return alpha * recon + (1.0 - alpha) * align

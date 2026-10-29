@@ -49,6 +49,9 @@ class AlignedFlexModule(FlexModule):
         **kwargs: object,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self.save_hyperparameters(
+            {"z_dim": z_dim, "noise_std": noise_std, "alpha_align": alpha_align}
+        )
         self.alpha_align = alpha_align
 
         n_reactions = int(self.Mmr.shape[1])
@@ -68,14 +71,15 @@ class AlignedFlexModule(FlexModule):
         flxs_sdt = flxs - flxs.mean(dim=1, keepdim=True)
         a = (self.Mmg @ ge_sdt.t()).t()
         b = (self.Mmr @ flxs_sdt.t()).t()
-        return pairwise_concordance(a, b, diff="relative")
+        return pairwise_concordance(a, b, diff="relative", scale=self.cor_scale)
 
     def loss_sco(self, ge: torch.Tensor, flxs: torch.Tensor) -> torch.Tensor:
         """Cross-modal alignment in learned bottleneck space.
 
         Projects fluxes (modality a) and expression (modality b) into a
         shared low-dim z-space via denoising tied-weight autoencoders.
-        Returns combined reconstruction + similarity alignment loss.
+        Returns reconstruction plus one minus Pearson correlation between
+        the two modalities' upper-triangle cosine similarity vectors.
         """
         flxs_c = flxs - flxs.mean(dim=1, keepdim=True)
         ge_c = ge - ge.mean(dim=1, keepdim=True)
@@ -88,7 +92,6 @@ class AlignedFlexModule(FlexModule):
             flxs_c,
             ge_c,
             alpha=self.alpha_align,
-            concordance_fn=lambda a, b: pairwise_concordance(a, b, diff="relative"),
         )
 
         return loss.expand(ge.shape[0])

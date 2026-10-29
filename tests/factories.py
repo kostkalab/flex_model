@@ -105,6 +105,7 @@ def create_flex_module(
     use_layer_weights: bool = False,
     use_disc: bool = False,
     module_cls: type[FlexModule] = FlexModule,
+    **module_kwargs: object,
 ) -> tuple[FlexModule, int, int]:
     """Create a FlexModule-compatible test model with random synthetic data."""
     problem = create_random_problem(
@@ -138,6 +139,7 @@ def create_flex_module(
         l_sco=1.0,
         l_ent=0.0,
         lopt_lr=1e-3,
+        **module_kwargs,
     )
     return model, problem.n_genes, problem.n_reactions
 

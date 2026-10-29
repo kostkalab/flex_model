@@ -50,15 +50,28 @@ def pairwise_concordance(
     For each sample and each pair of indices (i, j), scores whether a and b
     agree on the ordering of i vs j.
 
+    Let ``x_ij = da_ij * db_ij`` be the unscaled concordance product for one
+    pair. The ``scale`` parameter acts on the loss as ``scale * x_ij`` before
+    the activation, so it changes both the forward threshold and the backward
+    signal. In hinge mode, the zero-loss condition becomes ``x_ij >= 1/scale``;
+    larger values therefore stop penalizing mildly concordant pairs sooner.
+    For pairs that are still active, the gradient magnitude is also multiplied
+    by ``scale``. In logistic mode, larger values make the transition around
+    ``x_ij = 0`` steeper and increase the slope near the decision boundary.
+    With ``diff="relative"``, pairwise differences are bounded to ``O(1)``, so
+    ``scale`` behaves like a direct sharpness knob on ranking correction.
+
     Args:
         a:       Reference vector, shape (batch, D).
         b:       Predicted vector, shape (batch, D).
         mode:    "hinge" or "logistic". Default: "hinge".
         scale:   Multiplies the concordance product before the activation.
                  Hinge:    relu(1 - scale * da * db).  Larger → easier to
-                           satisfy, loss reaches zero sooner.
+                           satisfy, loss reaches zero sooner, and active-pair
+                           gradients are scaled up proportionally.
                  Logistic: softplus(-scale * da * db).  Larger → steeper
-                           sigmoid, stronger discordance penalty.
+                           sigmoid, larger slope near zero, and stronger
+                           focus on discordant or near-tied pairs.
                  Default: 1.0.
         diff:    "absolute" or "relative". Default: "absolute".
         delta:   Bin resolution for approximate computation.

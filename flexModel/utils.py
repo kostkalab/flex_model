@@ -5,7 +5,7 @@ for comparing predicted fluxes with gene expression data.
 
 Key components:
 - kendall_tau: Non-differentiable Kendall's tau for diagnostics
-- sim_cor: Similarity-based concordance between flux and expression patterns
+- sim_cor: Pearson alignment between flux and expression similarities
 - MeanBatchNorm1d: Custom batch normalization with only mean centering
 """
 
@@ -43,13 +43,28 @@ def kendall_tau(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return tau.squeeze(0) if squeeze else tau
 
 
+def pearson_loss(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Return one minus Pearson correlation for two 1D similarity vectors.
+
+    Inputs have shape ``(n_pairs,)``. Constant vectors have correlation zero.
+    Fewer than two entries contribute a graph-connected zero loss.
+    """
+    if a.numel() < 2:
+        return (a.sum() + b.sum()) * 0.0
+    a_centered = a - a.mean()  # (n_pairs,)
+    b_centered = b - b.mean()  # (n_pairs,)
+    a_unit = torch.nn.functional.normalize(a_centered, dim=0, eps=1e-7)
+    b_unit = torch.nn.functional.normalize(b_centered, dim=0, eps=1e-7)
+    return 1.0 - (a_unit * b_unit).sum().clamp(-1.0, 1.0)
+
+
 def sim_cor(
     flx: torch.Tensor, ge: torch.Tensor, scale: bool = True, nsamp: int | None = None
 ) -> torch.Tensor:
-    """Similarity-based pairwise concordance between flux and expression patterns.
+    """Pearson alignment between flux and expression sample similarities.
 
-    Measures whether pairwise sample similarities are rank-consistent between
-    flux and expression spaces using pairwise concordance with relative diffs.
+    Compares upper-triangle sample similarities using one minus Pearson
+    correlation, with O(n_samples²) storage.
 
     Args:
         flx: Predicted fluxes, shape (n_samples, n_reactions)
@@ -59,13 +74,11 @@ def sim_cor(
                Must be < n_samples/2
 
     Returns:
-        Scalar pairwise concordance loss between flux and expression similarities
+        Scalar Pearson loss between flux and expression similarities.
 
     Raises:
         AssertionError: If sample counts don't match or nsamp is invalid
     """
-    from .pairwise_concordance import pairwise_concordance
-
     # - assert that flx and ge have the same number of rows
     assert flx.shape[0] == ge.shape[0], "flx and ge must have the same number of rows"
 
@@ -97,10 +110,7 @@ def sim_cor(
     sim_fv = sim_f[idx[0], idx[1]]
     sim_gv = sim_g[idx[0], idx[1]]
 
-    # pairwise_concordance expects (batch, D); treat as single sample
-    return pairwise_concordance(
-        sim_gv.unsqueeze(0), sim_fv.unsqueeze(0), diff="relative"
-    ).squeeze(0)
+    return pearson_loss(sim_gv, sim_fv)
 
 
 class MeanBatchNorm1d(torch.nn.Module):

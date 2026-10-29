@@ -46,41 +46,136 @@ Since conda's environment.yml only supports a single global pip index URL, we sp
 
 ## Quick Start
 
+Install [`flex_species`](https://github.com/kostkalab/flex_species#usage) first
+and configure its repository credentials for the initial bundle download. This
+complete CPU example loads mouse bundle **0.3.0**, creates **113 synthetic cells**
+of gene expression, and predicts raw and projected reaction fluxes. Cached
+bundles are reused; use `offline=True` in `load_species` to require cached data.
+
+```python
+import flex_species as fs
+import numpy as np
+import torch
+
+from flexModel import AlignedFlexModule
+
+mouse = fs.load_species("mouse", version="0.3.0")
+torch.manual_seed(31)
+model = AlignedFlexModule.from_bundle(
+    mouse,
+    nlayers=2,
+    use_disc=True,
+    use_rea_rea_gate=True,
+    flx_project=True,
+    z_dim=32,
+).eval()
+
+# Synthetic expression: (cells, genes), with explicit column IDs.
+rng = np.random.default_rng(31)
+expression_values = rng.lognormal(size=(113, len(mouse.genes))).astype(np.float32)
+expression_gene_ids = mouse.genes
+expression = model.align_expression(expression_values, expression_gene_ids)
+
+# Run in small batches to bound graph-message memory.
+raw_batches, projected_batches = [], []
+with torch.inference_mode():
+    for batch in expression.split(4):
+        raw, projected = model(batch)
+        raw_batches.append(raw)
+        projected_batches.append(projected)
+fluxes = torch.cat(raw_batches)
+projected_fluxes = torch.cat(projected_batches)
+
+print("Expression:", tuple(expression.shape))       # (113, 1571)
+print("Raw fluxes:", tuple(fluxes.shape))            # (113, 2280)
+print("Projected fluxes:", tuple(projected_fluxes.shape))  # (113, 2280)
+print("All finite:", bool(torch.isfinite(fluxes).all()
+                          & torch.isfinite(projected_fluxes).all()))
+# Both flux outputs use model.bundle_identity.reactions as their column order.
+```
+
+These are predictions from an untrained model on synthetic inputs. Replace the
+synthetic values and gene IDs with your expression data for actual use.
+`FlexModule.from_bundle(mouse, ...)` uses the same adapter without the learned
+alignment bottleneck; omit `z_dim` for that class.
+
+### Bundle inputs and expression ordering
+
+Load species data separately and pass the validated bundle to either model
+class. The model adapter does not download data, fit preprocessing, or transform
+embeddings.
+
+`align_expression` returns an independent float32 tensor on the model device,
+with columns in `mouse.genes` order. Extra genes are ignored; duplicate IDs,
+missing required genes, incompatible shapes, and nonfinite values raise
+`ExpressionAlignmentError`. It performs no normalization or missing-gene
+imputation. Direct tensor calls to `model(...)` still require canonical gene
+order; use `align_expression` whenever input ordering is not already guaranteed.
+
+The adapter supports bundle schema 3 and the current reaction-graph,
+currency-selection, projection, and module-diffusion contracts. It checks
+labelled axes and reaction embedding input/output halves, then copies numerical
+inputs to float32 and edge indices to int64. Undirected reaction edges expand
+as `[original, reversed]` with matching `[f_disc, f_disc]`; self-loops remain the
+convolution's responsibility. The released projection basis is used as-is, with
+no transpose or recomputation. It is an approximate projection and does not
+guarantee exact stoichiometric balance.
+
+Layers, losses, discordance, halfspace initialization, and projection remain
+constructor options with their existing defaults. `use_disc`, `halfspace_init`,
+and `flx_project` are disabled unless requested. Embedding widths are inferred;
+bundle-owned tensors cannot be overridden through `from_bundle`. Thermodynamic
+values and compound embeddings are not consumed. Unsupported bundle contracts
+or axes raise `BundleCompatibilityError`. Importing `flexModel` and using its
+tensor constructor do not require installing `flex_species`.
+
+Source species, bundle version, content ID, and ordered gene/reaction/module/
+compound IDs are retained in `model.bundle_identity` and checkpoint metadata.
+After saving a normal Lightning checkpoint, restore with the same bundle:
+
+```python
+# After training:
+trainer.save_checkpoint("mouse-model.ckpt")
+restored = AlignedFlexModule.load_from_bundle_checkpoint("mouse-model.ckpt", mouse)
+```
+
+This restores saved model settings and weights using weights-only loading.
+Different bundle identities or canonical axes, and checkpoints missing bundle
+metadata, raise `BundleIdentityError`. Use this loader for bundle-bound models;
+the tensor-based checkpoint interface below remains available for manually
+constructed models.
+
+### Tensor-based construction
+
+For manually prepared data, supply tensors with consistent gene, reaction, and
+module ordering. The model constructs its GNN and learns embeddings when fixed
+embeddings are not supplied:
+
 ```python
 from flexModel import FlexModule
 
-# Supply tensors with consistent gene, reaction, and module ordering.
 graph_inputs = dict(
     eid_g2r=edge_index_g2r,          # Gene→Reaction edges
     eid_r2r=edge_index_r2r,          # Reaction→Reaction edges
-    Mcr=stoichiometry_matrix,        # S matrix
-    Mmg=gene_module_matrix,          # Gene-to-module mapping
-    Mmr=module_reaction_matrix,      # Module-to-reaction mapping
+    Mcr=stoichiometry_matrix,        # Compound-by-reaction matrix
+    Mmg=gene_module_matrix,          # Module-by-gene map
+    Mmr=module_reaction_matrix,      # Module-by-reaction map
 )
-
-# FlexModule constructs its GNN and learns embeddings when none are supplied.
 model = FlexModule(
     **graph_inputs,
     re_edim=64,                      # Reaction embedding width (even)
     ge_edim=32,                      # Gene embedding width
     nlayers=3,
-    l_fb=1.0,                        # Flux balance weight
-    l_pos=0.5,                       # Positivity weight
-    l_cor=1.0,                       # Correlation weight
-    cor_scale=1.0,                   # Module concordance margin scale
-    l_sco=0.1,                       # Similarity weight
-    l_ent=0.0,                       # Entropy weight (0=disabled)
-    lopt_lr=1e-3,                    # Learning rate
+    l_fb=1.0,
+    l_pos=0.5,
+    l_cor=1.0,
+    cor_scale=1.0,
+    l_sco=0.1,
+    l_ent=0.0,
+    lopt_lr=1e-3,
 )
-
-# Train with PyTorch Lightning
-import lightning as L
-
-trainer = L.Trainer(max_epochs=100, accelerator="gpu", devices=[1])
-trainer.fit(model, train_dataloader, val_dataloader)
 ```
 
-The example uses physical GPU 1. Use `accelerator="cpu"` for CPU training.
 `cor_wts` may be omitted; only uniform module weights are currently supported.
 
 ## Package Structure
@@ -90,6 +185,7 @@ flexModel/
 ├── flex_module.py           # Main Lightning module (FlexModule)
 ├── aligned_flex_module.py   # FlexModule with learned cross-modal alignment
 ├── alignment_bottleneck.py  # Denoising encoders and Pearson alignment loss
+├── bundle_adapter.py        # Species compatibility, conversion, expression order
 ├── flex_gnn.py              # GNN architectures
 ├── conv_gatedGraphConv.py   # Gated graph convolution layers
 ├── conv_gadconv.py          # Attention-based convolution 
@@ -243,5 +339,21 @@ pytest tests/test_training.py -v -s
 - Checks Pearson agreement and finite gradients, including constant similarities and small batches
 - Trains gated alignment models with `f_disc` and layer weighting independently enabled or disabled
 - Checks checkpoint loading with non-default bottleneck settings and matching predictions
+
+**`tests/test_bundle_adapter.py`**
+- Runs both models on synthetic expression with discordance, gating, and projection enabled
+- Checks expression permutations, extra/missing genes, independent copies, and invalid inputs
+- Verifies distinct edge attributes stay aligned with both reaction directions
+- Checks the released projection orientation and existing flux normalization
+- Trains both model classes with discordance and gating, and verifies checkpoint identity restoration/rejection
+
+**`tests/test_mouse_bundle_smoke.py`**
+- Loads the released mouse 0.3.0 bundle offline and runs both models on synthetic expression
+- Checks finite raw and projected fluxes with two layers, discordance, and gating
+- Skips if `flex_species` or the cached bundle is unavailable; never downloads data
+
+```bash
+python -m pytest tests/test_mouse_bundle_smoke.py -q -s
+```
 
 > **Note**: Tests use random data. The goal is to verify that gradients flow correctly and the model can optimize, not to validate biological accuracy.

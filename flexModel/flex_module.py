@@ -1,13 +1,28 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Self
 
 import lightning as L
+import numpy as np
 import torch
 
+from .bundle_adapter import (
+    BundleIdentity,
+    BundleIdentityError,
+    ExpressionAlignmentError,
+    align_expression as _align_expression,
+    bundle_model_inputs,
+    reject_bundle_overrides,
+)
 from .flex_gnn import build_flex_gnn
 from .pairwise_concordance import pairwise_concordance
 from .utils import kendall_tau, sim_cor
+
+if TYPE_CHECKING:
+    from flex_species import FlexSpeciesBundle
 
 
 class FlexModule(L.LightningModule):
@@ -52,6 +67,8 @@ class FlexModule(L.LightningModule):
         log_grad_fracs: Log per-loss-term gradient norm fractions every N
             training steps.  0 disables.  Adds 5 extra backward passes per
             logged step.
+        bundle_metadata: Source bundle identity, set by ``from_bundle`` and
+            restored from checkpoint hyperparameters.
     """
 
     # ------------------------------------------------------------------
@@ -86,8 +103,21 @@ class FlexModule(L.LightningModule):
         NSP: torch.Tensor | None = None,
         log_grad_fracs: int = 0,
         cor_scale: float = 1.0,
+        bundle_metadata: Mapping[str, object] | None = None,
+        _expected_bundle_metadata: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__()
+        self.bundle_identity = (
+            BundleIdentity.from_mapping(bundle_metadata)
+            if bundle_metadata is not None
+            else None
+        )
+        if _expected_bundle_metadata is not None and (
+            BundleIdentity.from_mapping(_expected_bundle_metadata) != self.bundle_identity
+        ):
+            raise BundleIdentityError(
+                "Checkpoint bundle identity or canonical axes do not match the supplied bundle"
+            )
         if not math.isfinite(cor_scale) or cor_scale <= 0:
             raise ValueError("cor_scale must be finite and positive.")
         n_genes = int(Mmg.shape[1])
@@ -145,6 +175,10 @@ class FlexModule(L.LightningModule):
         )
         self.log_grad_fracs = log_grad_fracs
         self.cor_scale = cor_scale
+        if self.bundle_identity is not None:
+            self.save_hyperparameters(
+                {"bundle_metadata": self.bundle_identity.to_mapping()}
+            )
 
         self.register_buffer(
             "loss_lms",
@@ -190,6 +224,65 @@ class FlexModule(L.LightningModule):
         else:
             self.register_buffer("rea_emb_tt", None)
             self.r_embed = torch.nn.Embedding(1, self.gnn.re_edim)
+
+    @classmethod
+    def from_bundle(cls, bundle: FlexSpeciesBundle, **model_options: object) -> Self:
+        """Construct from an already validated bundle using copied tensors.
+
+        Training options retain constructor defaults. In particular,
+        ``use_disc``, ``halfspace_init`` and ``flx_project`` are opt-in.
+        Bundle-owned tensor and identity overrides are rejected.
+        """
+        reject_bundle_overrides(model_options)
+        return cls(**bundle_model_inputs(bundle), **model_options)
+
+    @classmethod
+    def load_from_bundle_checkpoint(
+        cls,
+        checkpoint_path: str | Path,
+        bundle: FlexSpeciesBundle,
+        *,
+        map_location: str | torch.device = "cpu",
+        strict: bool = True,
+        **model_options: object,
+    ) -> Self:
+        """Restore saved configuration and weights against the same bundle.
+
+        The checkpoint must contain matching content identity and canonical
+        axes. Files are loaded with ``weights_only=True``. Graph tensors come
+        from the supplied bundle, so manual constructor inputs are unnecessary.
+        """
+        reject_bundle_overrides(model_options)
+        inputs = bundle_model_inputs(bundle)
+        # Lightning merges constructor overrides into saved hparams before its
+        # load hook. Keep saved identity intact and compare it separately.
+        expected_metadata = inputs.pop("bundle_metadata")
+        return cls.load_from_checkpoint(
+            checkpoint_path,
+            map_location=map_location,
+            strict=strict,
+            weights_only=True,
+            _expected_bundle_metadata=expected_metadata,
+            **inputs,
+            **model_options,
+        )
+
+    def align_expression(
+        self, values: torch.Tensor | np.ndarray, gene_ids: Sequence[str]
+    ) -> torch.Tensor:
+        """Copy and reorder (cells, input genes) into canonical bundle gene order.
+
+        Returns float32 on the model device, ignoring extra genes and rejecting
+        duplicate IDs, missing genes and nonfinite values. No preprocessing or
+        missing-gene imputation is performed.
+        """
+        if self.bundle_identity is None:
+            raise ExpressionAlignmentError(
+                "align_expression requires a model constructed from a bundle"
+            )
+        return _align_expression(
+            values, gene_ids, self.bundle_identity.genes, self.device
+        )
 
     @staticmethod
     def _resolve_embedding_dims(
@@ -297,6 +390,12 @@ class FlexModule(L.LightningModule):
             Tuple of raw normalized fluxes and projected fluxes. The projected
             term is ``None`` when nullspace projection is disabled.
         """
+        if self.bundle_identity is not None and (
+            ge.ndim != 2 or ge.shape[1] != len(self.bundle_identity.genes)
+        ):
+            raise ExpressionAlignmentError(
+                "Expression must have shape (cells, bundle genes); use align_expression for labelled input"
+            )
         x_dict = self.get_gen_rea_emb(ge)
         flxs = self.gnn(x_dict, self.eid)  # (batch, n_reactions) or (n_reactions,)
 

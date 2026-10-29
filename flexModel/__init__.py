@@ -14,6 +14,12 @@ from __future__ import annotations
 
 __version__ = "0.7.4"
 
+from .bundle_adapter import (
+    BundleCompatibilityError,
+    BundleIdentity,
+    BundleIdentityError,
+    ExpressionAlignmentError,
+)
 from .conv_gadconv import GADConv
 from .conv_gatedGraphConv import ResGatedConv
 from .aligned_flex_module import AlignedFlexModule
@@ -34,6 +40,10 @@ from .utils import (
 )
 
 __all__ = [
+    "BundleCompatibilityError",
+    "BundleIdentity",
+    "BundleIdentityError",
+    "ExpressionAlignmentError",
     "FlexModule",
     "AlignedFlexModule",
     "FlexGNN",

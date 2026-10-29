@@ -61,6 +61,11 @@ version = {attr = "flexModel.__version__"}
 line-length = 88
 target-version = ["py310", "py311"]
 
+[tool.pytest.ini_options]
+markers = [
+    "species_bundle: offline integration tests requiring a cached released species bundle",
+]
+
 [tool.isort]
 profile = "black"
 line_length = 88
